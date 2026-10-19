@@ -1,15 +1,19 @@
 """Main window of the collections program."""
 from datetime import date
 
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import QUrl
 from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtWidgets import (QHBoxLayout, QLabel, QListWidget, QMainWindow, QMessageBox, QStackedWidget, QToolBar,
-                               QVBoxLayout, QWidget)
+                               QWidget)
 
 from ..db import DB
 from ..updater import UpdateChecker
 from ..version import BUILD
+from .. import stages
 from .cycle_page import CyclePage
+from .follow_page import FollowPage
+from .letters_page import LettersPage
+from .templates_page import TemplatesPage
 from .people_pages import CustomerDialog, CustomersPage, LogPage, RepsPage
 from .settings_page import SettingsPage, mail_config
 from .widgets import NAVY, error, info, month_label, warn
@@ -30,6 +34,9 @@ class MainWindow(QMainWindow):
         self.banner = QLabel()
         self.banner.setStyleSheet("color:#b54708; font-weight:700; padding: 0 8px;")
         tb.addWidget(self.banner)
+        alerts = QAction("📋 التنبيهات", self)
+        alerts.triggered.connect(self.show_alerts)
+        tb.addAction(alerts)
         spacer = QWidget()
         spacer.setSizePolicy(spacer.sizePolicy().horizontalPolicy().Expanding, spacer.sizePolicy().verticalPolicy())
         tb.addWidget(spacer)
@@ -47,7 +54,10 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.cycle_page = CyclePage(self)
         self.customers_page = CustomersPage(self)
-        self.pages = [("🔄 الدورة الشهرية", self.cycle_page), ("👥 العملاء", self.customers_page),
+        self.follow_page = FollowPage(self)
+        self.pages = [("🔄 الدورة الشهرية (يوم 1)", self.cycle_page),
+                      ("📨 المتابعة والخطابات", self.follow_page), ("🗂 سجل الخطابات والتفاوض", LettersPage(self)),
+                      ("📝 النماذج", TemplatesPage(self)), ("👥 العملاء", self.customers_page),
                       ("🧑‍💼 المناديب", RepsPage(self)), ("📜 سجل العمليات", LogPage(self)),
                       ("⚙ الإعدادات", SettingsPage(self))]
         for title, page in self.pages:
@@ -71,8 +81,8 @@ class MainWindow(QMainWindow):
     def _page(self, i):
         self.stack.setCurrentIndex(i)
         page = self.pages[i][1]
-        if page is not self.cycle_page:
-            page.load()
+        page.load()
+        self.update_banner()
 
     def can_edit(self, silent=False):
         if self.readonly and not silent:
@@ -91,15 +101,39 @@ class MainWindow(QMainWindow):
         today = date.today()
         month = f"{today.year:04d}-{today.month:02d}"
         cyc = self.db.cycle(month)
-        stages = [("day_statements", "تجهيز الكشوف"), ("day_finance", "خطاب الإدارة المالية"),
+        stage_days = [("day_statements", "تجهيز الكشوف"), ("day_finance", "خطاب الإدارة المالية"),
                   ("day_legal", "خطاب الإدارة القانونية"), ("day_action", "الإجراء القانوني")]
-        due = [name for key, name in stages if today.day >= int(self.db.setting_num(key))]
+        due = [name for key, name in stage_days if today.day >= int(self.db.setting_num(key))]
+        parts = []
         if not cyc:
-            self.banner.setText(f"⏰ دورة {month_label(month)} لم تبدأ — ارفع تقرير الأعمار (مرحلة {due[0] if due else 'تجهيز الكشوف'})")
+            parts.append(f"⏰ دورة {month_label(month)} لم تبدأ — ارفع تقرير الأعمار")
         elif due:
-            self.banner.setText(f"⏰ المرحلة الحالية لدورة {month_label(month)}: {due[-1]}")
-        else:
-            self.banner.setText("")
+            parts.append(f"⏰ المرحلة الحالية لدورة {month_label(month)}: {due[-1]}")
+        latest = self.db.cycles()
+        if latest:
+            stop = stages.stop_sale(self.db, latest[0])
+            if stop:
+                parts.append(f"⛔ إيقاف بيع: {len(stop)} عميل")
+        late = stages.late_instalments(self.db)
+        if late:
+            parts.append(f"⚠ أقساط تفاوض متأخرة: {len(late)}")
+        self.banner.setText("    ".join(parts))
+
+    def show_alerts(self):
+        """Stop-sale list (alert for the screen user only) and late negotiation instalments."""
+        lines = []
+        cycles = self.db.cycles()
+        if cycles:
+            stop = stages.stop_sale(self.db, cycles[0])
+            if stop:
+                lines.append(f"⛔ عملاء إيقاف البيع (خطاب قانوني ولم يسددوا النسبة) — {len(stop)}:")
+                lines += [f"   {c['code']} — {c['name']} — {c['rep_name']} — متبقي {c['overdue'] - (c['paid'] or 0):,.2f}"
+                          for c in stop[:60]]
+        late = stages.late_instalments(self.db)
+        if late:
+            lines.append(f"\n⚠ أقساط تفاوض متأخرة — {len(late)}:")
+            lines += [f"   {x['code']} — {x['name']} — المستحق {x['due']:,.2f} والمسدد {x['paid']:,.2f}" for x in late]
+        info(self, "\n".join(lines) if lines else "لا توجد تنبيهات.")
 
     def restore_backup(self, path):
         self.db.close()

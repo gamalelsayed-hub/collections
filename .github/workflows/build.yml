@@ -23,7 +23,7 @@ jobs:
         shell: bash
         run: sed -i "s/^BUILD = .*/BUILD = ${{ github.run_number }}/" coll/version.py
       - name: Build exe
-        run: python -m PyInstaller --noconfirm --clean --windowed --name Collections --collect-data pdfminer --collect-data certifi main.py
+        run: python -m PyInstaller --noconfirm --clean --windowed --name Collections --collect-data pdfminer --collect-data certifi --add-data "coll/resources;coll/resources" main.py
       - name: Build installer
         shell: pwsh
         run: |

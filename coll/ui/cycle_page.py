@@ -5,7 +5,7 @@ from datetime import date
 from PySide6.QtCore import QSettings, QUrl, Qt
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QHBoxLayout,
-                               QLabel, QLineEdit, QListWidget, QPlainTextEdit, QPushButton, QVBoxLayout, QWidget)
+                               QLabel, QLineEdit, QListWidget, QPushButton, QVBoxLayout, QWidget)
 
 from .. import aging, day1, mailer
 from ..reps import suggest_rep

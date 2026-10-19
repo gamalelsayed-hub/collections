@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
 from .. import reps as R
-from .widgets import NAVY, ask, color_item, error, info, money, month_label, ro, styled_table, warn
+from .widgets import NAVY, ask, error, info, money, month_label, ro, styled_table, warn
 
 
 # ================================================================== customers
@@ -48,7 +48,7 @@ class CustomerDialog(QDialog):
         self.notes.setMaximumHeight(80)
         f.addRow("ملاحظات:", self.notes)
         tabs.addTab(w, "البيانات")
-        hist = styled_table(["الدورة", "الحالة", "الرصيد", "المتأخر", "رصيد الكشف", "التنبيهات"])
+        hist = styled_table(["الدورة", "الحالة", "الرصيد", "المتأخر", "المسدد", "النسبة", "رصيد الكشف", "التنبيهات"])
         rows = []
         for cyc in db.cycles():
             for cc in db.cycle_customers(cyc["id"]):
@@ -58,11 +58,22 @@ class CustomerDialog(QDialog):
         for i, (m, cc) in enumerate(rows):
             for col, v in enumerate((month_label(m), cc["status"] or ("مطلوب مطابقة" if cc["required"] else "—"))):
                 hist.setItem(i, col, ro(v))
-            for col, v in ((2, cc["balance"]), (3, cc["overdue"]), (4, cc["stmt_balance"])):
+            for col, v in ((2, cc["balance"]), (3, cc["overdue"]), (4, cc["paid"] or 0), (6, cc["stmt_balance"])):
                 hist.setItem(i, col, ro(money(v), True))
-            hist.setItem(i, 5, ro(cc["warning"]))
+            hist.setItem(i, 5, ro(f"{(cc['pct'] or 0) * 100:.0f}%", True))
+            hist.setItem(i, 7, ro(" | ".join(x for x in (cc["warning"], cc["exclude_reason"], cc["carried"]) if x)))
         hist.resizeColumnsToContents()
         tabs.addTab(hist, "المراحل والدورات")
+        lets = styled_table(["رقم الخطاب", "النوع", "التاريخ", "المبلغ", "الحالة"])
+        from ..stages import KIND_NAMES
+        ls = db.letters(code=code)
+        lets.setRowCount(len(ls))
+        for i, l in enumerate(ls):
+            for col, v in enumerate((l["serial"], KIND_NAMES.get(l["kind"], l["kind"]), l["date"], money(l["amount"]),
+                                     l["status"] + (f" — {l['cancel_reason']}" if l["cancel_reason"] else ""))):
+                lets.setItem(i, col, ro(v, col == 3))
+        lets.resizeColumnsToContents()
+        tabs.addTab(lets, f"الخطابات ({len(ls)})")
         log = styled_table(["الوقت", "المستخدم", "العملية", "التفاصيل"])
         ev = db.events(code=code)
         log.setRowCount(len(ev))

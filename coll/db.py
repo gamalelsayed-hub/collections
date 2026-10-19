@@ -32,7 +32,31 @@ CREATE TABLE IF NOT EXISTS column_maps(kind TEXT PRIMARY KEY, mapping TEXT);
 CREATE TABLE IF NOT EXISTS stmt_sections(
     cycle_id INTEGER, code TEXT, account TEXT, account_name TEXT, name TEXT, source TEXT, pages TEXT,
     balance REAL, mode TEXT, uploaded TEXT, PRIMARY KEY(cycle_id, code, account));
+CREATE TABLE IF NOT EXISTS templates(kind TEXT PRIMARY KEY, html TEXT, serial_format TEXT, updated TEXT, user TEXT);
+CREATE TABLE IF NOT EXISTS receipts(
+    cycle_id INTEGER, voucher TEXT, date TEXT, code TEXT, name TEXT, account TEXT, amount REAL, source TEXT,
+    uploaded TEXT, PRIMARY KEY(cycle_id, voucher, code, amount));
+CREATE TABLE IF NOT EXISTS negotiations(
+    id INTEGER PRIMARY KEY, code TEXT, cycle_id INTEGER, created TEXT, amount REAL, data TEXT,
+    status TEXT DEFAULT 'جاري', serial TEXT DEFAULT '', pdf TEXT DEFAULT '', user TEXT, closed TEXT DEFAULT '',
+    note TEXT DEFAULT '');
 """
+
+# columns added after the first release (added to existing databases on open)
+MIGRATIONS = [
+    ("cycle_customers", "matched", "INTEGER"),            # 1 matched, 0 not matched, NULL not returned yet
+    ("cycle_customers", "signed", "TEXT DEFAULT ''"),
+    ("cycle_customers", "paid", "REAL DEFAULT 0"),
+    ("cycle_customers", "pct", "REAL DEFAULT 0"),
+    ("cycle_customers", "excluded", "INTEGER DEFAULT 0"),
+    ("cycle_customers", "exclude_reason", "TEXT DEFAULT ''"),
+    ("cycle_customers", "level", "INTEGER DEFAULT 0"),    # 1 finance letter, 2 legal letter, 3 legal action
+    ("cycle_customers", "pn_letter", "INTEGER DEFAULT 0"),  # legal letter was the promissory-note version
+    ("cycle_customers", "carried", "TEXT DEFAULT ''"),
+    ("letters", "rep_name", "TEXT DEFAULT ''"),
+    ("letters", "cancel_reason", "TEXT DEFAULT ''"),
+]
+EXTRA_CYCLE_FIELDS = ["matched", "signed", "paid", "pct", "excluded", "exclude_reason", "level", "pn_letter", "carried"]
 
 DEFAULTS = {
     "company": "شركة أدوات التعمير التجارية",
@@ -44,6 +68,11 @@ DEFAULTS = {
     "day_legal": "14",
     "day_action": "21",
     "require_password": "0",
+    "company_cr": "4030093636",
+    "contact_mobile": "",
+    "contact_email": "",
+    "letter_footer": "",
+    "letter_unmatched": "0",
     "mail_subject": "كشوف حسابات العملاء المطلوب مطابقتهم — {month}",
     "mail_body": ("الأستاذ/ {rep} المحترم،\n\nمرفق كشوف حسابات عملائك المطلوب مطابقتهم لشهر {month} "
                   "({count} عميل).\nنرجو مطابقتها مع العملاء وإعادتها موقعة ومختومة.\n\nمع الشكر،\n"
@@ -71,6 +100,10 @@ class DB:
         self.con = sqlite3.connect(path)
         self.con.row_factory = sqlite3.Row
         self.con.executescript(SCHEMA)
+        for table, col, decl in MIGRATIONS:
+            cols = {r[1] for r in self.con.execute(f"PRAGMA table_info({table})")}
+            if col not in cols:
+                self.con.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
         self.con.commit()
 
     def close(self):
@@ -220,17 +253,33 @@ class DB:
     def create_cycle(self, month, aging_file, aging_date, rows):
         """rows: dicts with CYCLE_FIELDS. Replaces the cycle's customer list if it exists."""
         cyc = self.cycle(month)
+        keep = {}
         if cyc:
             cid = cyc["id"]
+            keep = {c["code"]: c for c in self.cycle_customers(cid)}
             self.con.execute("UPDATE cycles SET aging_file=?, aging_date=? WHERE id=?", (aging_file, aging_date, cid))
             self.con.execute("DELETE FROM cycle_customers WHERE cycle_id=?", (cid,))
         else:
+            prev = self.con.execute("SELECT * FROM cycles WHERE month<? ORDER BY month DESC LIMIT 1", (month,)).fetchone()
             cid = self.con.execute("INSERT INTO cycles(month, created, aging_file, aging_date) VALUES(?,?,?,?)",
                                    (month, now(), aging_file, aging_date)).lastrowid
+            if prev:
+                # customers still inside the letters stages continue from their last letter
+                thr = self.setting_num("pay_threshold")
+                for c in self.cycle_customers(prev["id"]):
+                    if c["level"] and not c["excluded"] and (c["pct"] or 0) < thr:
+                        keep[c["code"]] = {"level": c["level"], "pn_letter": c["pn_letter"],
+                                           "carried": f"مستمر من دورة {prev['month']}"}
         self.con.executemany(
             f"INSERT INTO cycle_customers(cycle_id, {', '.join(CYCLE_FIELDS)}) VALUES({','.join('?' * (len(CYCLE_FIELDS) + 1))})",
             [(cid,) + tuple(r.get(f, "" if f in ("status", "statement", "stmt_detail", "warning") else None)
                             for f in CYCLE_FIELDS) for r in rows])
+        for code, old in keep.items():
+            fields = {f: old[f] for f in EXTRA_CYCLE_FIELDS if f in old}
+            if cyc and old.get("status") not in (None, "", "مطلوب مطابقة"):
+                fields["status"] = old["status"]   # same month re-uploaded: keep the follow-up status
+            if fields:
+                self.update_cycle_customer(cid, code, commit=False, **fields)
         self.con.commit()
         return cid
 
@@ -259,8 +308,132 @@ class DB:
     def commit(self):
         self.con.commit()
 
-    def update_cycle_customer(self, cycle_id, code, **fields):
+    def update_cycle_customer(self, cycle_id, code, commit=True, **fields):
         sets = ", ".join(f"{k}=?" for k in fields)
         self.con.execute(f"UPDATE cycle_customers SET {sets} WHERE cycle_id=? AND code=?",
                          tuple(fields.values()) + (cycle_id, code))
+        if commit:
+            self.con.commit()
+
+    def cycle_customer(self, cycle_id, code):
+        r = self.con.execute("SELECT * FROM cycle_customers WHERE cycle_id=? AND code=?", (cycle_id, code)).fetchone()
+        return dict(r) if r else None
+
+    # ---------------- templates & serials
+    def template(self, kind):
+        from .templates import DEFAULTS, SERIAL_FORMATS
+        r = self.con.execute("SELECT html, serial_format FROM templates WHERE kind=?", (kind,)).fetchone()
+        return {"kind": kind, "html": r[0] if r and r[0] else DEFAULTS[kind],
+                "serial_format": r[1] if r and r[1] else SERIAL_FORMATS[kind], "custom": bool(r)}
+
+    def save_template(self, kind, html, serial_format):
+        self.con.execute("INSERT OR REPLACE INTO templates VALUES(?,?,?,?,?)", (kind, html, serial_format, now(), self.user))
+        self.con.commit()
+
+    def reset_template(self, kind):
+        self.con.execute("DELETE FROM templates WHERE kind=?", (kind,))
+        self.con.commit()
+
+    def next_serial(self, kind):
+        """Reserve the next serial of a letter type (never reused, even if the letter is cancelled)."""
+        from .templates import COUNTER
+        key = COUNTER.get(kind, kind)
+        r = self.con.execute("SELECT last FROM serials WHERE kind=? AND year=0", (key,)).fetchone()
+        n = (r[0] if r else 0) + 1
+        self.con.execute("INSERT OR REPLACE INTO serials VALUES(?,0,?)", (key, n))
+        fmt = self.template(kind)["serial_format"]
+        serial = fmt.replace("{رقم}", f"{n:04d}").replace("{السنة}", datetime.now().strftime("%Y"))
+        if serial == fmt:
+            serial = f"{fmt}-{n:04d}"
+        return serial
+
+    def serial_counter(self, kind):
+        from .templates import COUNTER
+        r = self.con.execute("SELECT last FROM serials WHERE kind=? AND year=0", (COUNTER.get(kind, kind),)).fetchone()
+        return r[0] if r else 0
+
+    def set_serial_counter(self, kind, last):
+        from .templates import COUNTER
+        self.con.execute("INSERT OR REPLACE INTO serials VALUES(?,0,?)", (COUNTER.get(kind, kind), int(last)))
+        self.con.commit()
+
+    # ---------------- letters
+    def add_letter(self, serial, kind, code, cycle_id, date, amount, pdf, prev_serial, rep_name):
+        self.con.execute("INSERT INTO letters(serial, kind, code, cycle_id, date, amount, pdf, prev_serial, user, created,"
+                         " rep_name) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                         (serial, kind, code, cycle_id, date, amount, pdf, prev_serial, self.user, now(), rep_name))
+
+    def letters(self, code=None, cycle_id=None):
+        q, args = "SELECT l.*, c.name FROM letters l LEFT JOIN customers c ON c.code=l.code WHERE 1=1", []
+        if code:
+            q += " AND l.code=?"
+            args.append(code)
+        if cycle_id:
+            q += " AND l.cycle_id=?"
+            args.append(cycle_id)
+        return [dict(r) for r in self.con.execute(q + " ORDER BY l.id DESC", args)]
+
+    def last_letter(self, code, before_kinds=None):
+        q = "SELECT * FROM letters WHERE code=? AND status!='ملغي'"
+        args = [code]
+        if before_kinds:
+            q += f" AND kind IN ({','.join('?' * len(before_kinds))})"
+            args += list(before_kinds)
+        r = self.con.execute(q + " ORDER BY id DESC LIMIT 1", args).fetchone()
+        return dict(r) if r else None
+
+    def cancel_letter(self, serial, reason):
+        self.con.execute("UPDATE letters SET status='ملغي', cancel_reason=? WHERE serial=?", (reason, serial))
+        self.con.commit()
+
+    # ---------------- receipts
+    def add_receipts(self, cycle_id, recs, source):
+        added = 0
+        for r in recs:
+            cur = self.con.execute("INSERT OR IGNORE INTO receipts VALUES(?,?,?,?,?,?,?,?,?)",
+                                   (cycle_id, r.voucher, r.date, r.code, r.name, r.account, r.amount, source, now()))
+            added += cur.rowcount
+        self.con.commit()
+        return added
+
+    def receipts(self, cycle_id, code=None):
+        q, args = "SELECT * FROM receipts WHERE cycle_id=?", [cycle_id]
+        if code:
+            q += " AND code=?"
+            args.append(code)
+        return [dict(r) for r in self.con.execute(q + " ORDER BY date, voucher", args)]
+
+    def delete_receipts(self, cycle_id, source):
+        self.con.execute("DELETE FROM receipts WHERE cycle_id=? AND source=?", (cycle_id, source))
+        self.con.commit()
+
+    def paid_by_code(self, cycle_id):
+        return {r[0]: r[1] for r in self.con.execute(
+            "SELECT code, SUM(amount) FROM receipts WHERE cycle_id=? GROUP BY code", (cycle_id,))}
+
+    # ---------------- negotiations
+    def negotiations(self, code=None, active_only=False):
+        q, args = "SELECT n.*, c.name FROM negotiations n LEFT JOIN customers c ON c.code=n.code WHERE 1=1", []
+        if code:
+            q += " AND n.code=?"
+            args.append(code)
+        if active_only:
+            q += " AND n.status='جاري'"
+        out = []
+        for r in self.con.execute(q + " ORDER BY n.id DESC", args):
+            d = dict(r)
+            d["data"] = json.loads(d["data"] or "{}")
+            out.append(d)
+        return out
+
+    def add_negotiation(self, code, cycle_id, amount, data, serial, pdf):
+        cur = self.con.execute("INSERT INTO negotiations(code, cycle_id, created, amount, data, serial, pdf, user) "
+                               "VALUES(?,?,?,?,?,?,?,?)",
+                               (code, cycle_id, now(), amount, json.dumps(data, ensure_ascii=False), serial, pdf,
+                                self.user))
+        self.con.commit()
+        return cur.lastrowid
+
+    def close_negotiation(self, nid, status, note=""):
+        self.con.execute("UPDATE negotiations SET status=?, closed=?, note=? WHERE id=?", (status, now(), note, nid))
         self.con.commit()
