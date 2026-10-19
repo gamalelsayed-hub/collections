@@ -1,0 +1,47 @@
+name: Build Windows app
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt pyinstaller==6.16.0 pytest
+      - name: Tests
+        run: python -m pytest -q tests
+      - name: Stamp build number
+        shell: bash
+        run: sed -i "s/^BUILD = .*/BUILD = ${{ github.run_number }}/" coll/version.py
+      - name: Build exe
+        run: python -m PyInstaller --noconfirm --clean --windowed --name Collections --collect-data pdfminer --collect-data certifi main.py
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; }
+          & $iscc "/DAppVersion=${{ github.run_number }}" installer\setup.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Collections-windows
+          path: installer/Output/Collections-Setup.exe
+      - name: Publish release
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          Compress-Archive -Path dist/Collections -DestinationPath Collections-windows.zip
+          git log -1 --pretty=%B | Out-File -Encoding utf8 notes.txt
+          gh release create "build-${{ github.run_number }}" installer/Output/Collections-Setup.exe Collections-windows.zip `
+            --title "نسخة رقم ${{ github.run_number }}" --notes-file notes.txt --target "${{ github.sha }}"

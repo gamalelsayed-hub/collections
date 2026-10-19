@@ -1,0 +1,16 @@
+__pycache__/
+build/
+dist/
+*.spec
+.pytest_cache/
+Output/
+
+# real customer data must never be committed
+*.xlsx
+*.xls
+*.csv
+*.pdf
+*.docx
+*.db
+*.lock
+data/
