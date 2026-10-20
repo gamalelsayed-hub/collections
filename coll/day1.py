@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from . import statements as ST
+from .pdfrepair import readable
 from .textutil import norm
 
 BALANCE_TOLERANCE = 1.0
@@ -31,12 +32,14 @@ def safe_name(s):
 def attach_file(db, folder, cycle, path, mode, rep_name=""):
     """mode: 'credit' (one file for all credit customers) or 'custody' (one file per rep).
     Stores a copy of the file and the sections of the customers that need reconciliation."""
+    name = os.path.basename(path)
+    path = readable(path)   # repaired copy if the file's ending is damaged
     sections, unread = ST.read_pdf(path)
-    res = UploadResult(os.path.basename(path), mode, unread_pages=unread)
+    res = UploadResult(name, mode, unread_pages=unread)
     cust = {c["code"]: c for c in db.cycle_customers(cycle["id"])}
     src_dir = folder.files_dir(cycle["month"], "sources")
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    copy = os.path.join(src_dir, f"{stamp} - {safe_name(os.path.basename(path))}")
+    copy = os.path.join(src_dir, f"{stamp} - {safe_name(name)}")
     shutil.copy2(path, copy)
     for sec in sections:
         c = cust.get(sec.code)

@@ -119,3 +119,18 @@ def test_next_month_statements(tmp_path, monkeypatch):
     assert "يُرفق كشف الشهر السابق" in c3["warning"]
     merged = os.path.join(folder.path, c3["statement"])
     assert len(PdfReader(merged).pages) == 3   # October's 2 pages + November's 1 page
+
+
+def test_damaged_pdf_is_repaired(tmp_path):
+    from coll.pdfrepair import DamagedPdf, readable
+    good = blank_pdf(tmp_path / "good.pdf", 2)
+    assert readable(good) == good
+    data = open(good, "rb").read()
+    cut = tmp_path / "cut.pdf"
+    cut.write_bytes(data[:-30])          # ending lost (e.g. sync not finished)
+    fixed = readable(str(cut))
+    assert fixed != str(cut) and len(PdfReader(fixed).pages) == 2
+    junk = tmp_path / "junk.pdf"
+    junk.write_bytes(b"not a pdf")
+    with pytest.raises(DamagedPdf):
+        readable(str(junk))

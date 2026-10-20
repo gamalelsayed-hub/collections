@@ -52,8 +52,10 @@ def is_customer_line(account, code, known_codes=None):
 def read_pdf(path, known_codes=None):
     """Return (customer receipts, excluded internal/other lines count)."""
     import pdfplumber
+
+    from .pdfrepair import readable
     out, excluded = [], 0
-    with pdfplumber.open(path) as pdf:
+    with pdfplumber.open(readable(path)) as pdf:
         for page in pdf.pages:
             rows = {}
             for w in page.extract_words():
