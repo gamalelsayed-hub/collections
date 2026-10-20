@@ -14,7 +14,7 @@ class FakePage:
         for row, tokens in enumerate(lines):
             x = 500
             for t in tokens:  # tokens given in reading order (right to left)
-                self.words.append({"text": t, "top": row * 20, "x0": x})
+                self.words.append({"text": t, "top": row * 20, "x0": x, "x1": x + 50})
                 x -= 60
 
     def extract_words(self, **_):

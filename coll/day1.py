@@ -62,10 +62,17 @@ def review(db, cycle):
     """Check every required customer against its statement sections. Updates status/warnings and returns
     a list of dicts for the screen."""
     secs = db.sections(cycle["id"])
+    prev = db.previous_cycle(cycle["month"])
+    prev_cust = {x["code"]: x for x in db.cycle_customers(prev["id"])} if prev else {}
+    prev_secs = db.sections(prev["id"]) if prev else {}
     out = []
     for c in db.cycle_customers(cycle["id"], required_only=True):
         parts = secs.get(c["code"], [])
         warnings = [c["warning"]] if c["warning"] and "أكثر من مندوب" in c["warning"] else []
+        c["prepend"] = ""
+        pc = prev_cust.get(c["code"])
+        if parts and pc:
+            warnings += _carry_over(c, parts, pc, prev_secs.get(c["code"], []), prev["month"])
         if not parts:
             status, total, detail = "كشف ناقص", None, ""
         else:
@@ -92,6 +99,26 @@ def review(db, cycle):
     return out
 
 
+def _carry_over(c, parts, pc, prev_parts, prev_month):
+    """Monthly statements (starting after last month's statement): check the opening balance against the balance
+    the customer confirmed, or attach last month's statement when the customer did not reconcile."""
+    starts = [p.get("date_from") or "" for p in parts]
+    prev_end = max((p.get("date_to") or "" for p in prev_parts), default="")
+    if not prev_end or not all(starts) or min(starts) <= prev_end:
+        return []   # the new statement already covers last month's period
+    if pc["matched"] == 1:
+        openings = [p.get("opening") for p in parts]
+        if None not in openings and pc["stmt_balance"] is not None \
+                and abs(sum(openings) - pc["stmt_balance"]) > BALANCE_TOLERANCE:
+            return [f"⚠ الرصيد الافتتاحي {sum(openings):,.2f} لا يساوي الرصيد الذي طابق عليه العميل في دورة "
+                    f"{prev_month} ({pc['stmt_balance']:,.2f})"]
+        return []
+    if pc["statement"]:
+        c["prepend"] = pc["statement"]
+        return [f"📎 العميل لم يطابق في دورة {prev_month} — يُرفق كشف الشهر السابق قبل كشف هذا الشهر"]
+    return []
+
+
 def rep_of(db, rep_name):
     rep = db.rep_for(rep_name) if rep_name else None
     return rep
@@ -113,7 +140,11 @@ def build_packages(db, folder, cycle):
         key = rep["name"] if rep else f"بدون مندوب ({c['rep_name'] or '—'})"
         rep_dir = os.path.join(base, safe_name(key))
         pdf = os.path.join(rep_dir, f"{c['code']} - {safe_name(c['name'])}.pdf")
-        ST.write_pdf([(os.path.join(folder.path, p["source"]), p["pages"]) for p in c["parts"]], pdf)
+        parts = [(os.path.join(folder.path, p["source"]), p["pages"]) for p in c["parts"]]
+        old = os.path.join(folder.path, c["prepend"]) if c["prepend"] else ""
+        if old and os.path.exists(old):
+            parts.insert(0, (old, None))
+        ST.write_pdf(parts, pdf)
         db.update_cycle_customer(cycle["id"], c["code"], statement=os.path.relpath(pdf, folder.path))
         entry = by_rep.setdefault(key, {"rep": key, "email": rep["email"] if rep else "", "rep_record": rep,
                                         "customers": [], "dir": rep_dir})

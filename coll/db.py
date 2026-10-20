@@ -53,6 +53,9 @@ MIGRATIONS = [
     ("cycle_customers", "level", "INTEGER DEFAULT 0"),    # 1 finance letter, 2 legal letter, 3 legal action
     ("cycle_customers", "pn_letter", "INTEGER DEFAULT 0"),  # legal letter was the promissory-note version
     ("cycle_customers", "carried", "TEXT DEFAULT ''"),
+    ("stmt_sections", "opening", "REAL"),
+    ("stmt_sections", "date_from", "TEXT DEFAULT ''"),
+    ("stmt_sections", "date_to", "TEXT DEFAULT ''"),
     ("letters", "rep_name", "TEXT DEFAULT ''"),
     ("letters", "cancel_reason", "TEXT DEFAULT ''"),
 ]
@@ -246,6 +249,10 @@ class DB:
     def cycles(self):
         return [dict(r) for r in self.con.execute("SELECT * FROM cycles ORDER BY month DESC")]
 
+    def previous_cycle(self, month):
+        r = self.con.execute("SELECT * FROM cycles WHERE month<? ORDER BY month DESC LIMIT 1", (month,)).fetchone()
+        return dict(r) if r else None
+
     def cycle(self, month):
         r = self.con.execute("SELECT * FROM cycles WHERE month=?", (month,)).fetchone()
         return dict(r) if r else None
@@ -289,9 +296,10 @@ class DB:
 
     # ---------------- statement sections
     def save_section(self, cycle_id, sec, mode, source_copy):
-        self.con.execute("INSERT OR REPLACE INTO stmt_sections VALUES(?,?,?,?,?,?,?,?,?,?)",
+        self.con.execute("INSERT OR REPLACE INTO stmt_sections(cycle_id, code, account, account_name, name, source, "
+                         "pages, balance, mode, uploaded, opening, date_from, date_to) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                          (cycle_id, sec.code, sec.account, sec.account_name, sec.name, source_copy,
-                          json.dumps(sec.pages), sec.balance, mode, now()))
+                          json.dumps(sec.pages), sec.balance, mode, now(), sec.opening, sec.date_from, sec.date_to))
 
     def sections(self, cycle_id):
         out = {}

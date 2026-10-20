@@ -82,3 +82,40 @@ def test_day1_flow(tmp_path, monkeypatch):
     assert len(PdfReader(os.path.join(salem["dir"], merged)).pages) == 3
     names = zipfile.ZipFile(salem["zip"]).namelist()
     assert "قائمة العملاء.xlsx" in names and len(names) == 3
+
+
+def test_next_month_statements(tmp_path, monkeypatch):
+    """October from 1/1, November only 1/11–30/11: opening checked for matched customers, October's statement
+    attached for customers who did not reconcile."""
+    folder = DataFolder(str(tmp_path / "data"))
+    db = DB(folder.db_path, "tester")
+    rows = sample_rows()
+    first, mapping = aging.guess_columns(rows)
+    recs = aging.read_rows(rows, first, mapping)
+    grouped = aging.group_customers(recs, 30, 60)
+    for month in ("2026-10", "2026-11"):
+        db.create_cycle(month, "aging.xlsx", f"{month}-01", grouped)
+    octo, nov = db.cycle("2026-10"), db.cycle("2026-11")
+
+    oct_pdf = blank_pdf(tmp_path / "oct.pdf", 3)
+    nov_pdf = blank_pdf(tmp_path / "nov.pdf", 2)
+
+    def sec(code, src, pages, balance, opening, start, end):
+        return ST.Section(code, "", "1140101", "العملاء", src, pages, balance, opening, start, end)
+    fake = {oct_pdf: [sec("90000001", oct_pdf, [0], 600.0, 0.0, "2026-01-01", "2026-10-31"),
+                      sec("90000003", oct_pdf, [1, 2], 150.0, 0.0, "2026-01-01", "2026-10-31")],
+            nov_pdf: [sec("90000001", nov_pdf, [0], 650.0, 590.0, "2026-11-01", "2026-11-30"),
+                      sec("90000003", nov_pdf, [1], 150.0, 150.0, "2026-11-01", "2026-11-30")]}
+    monkeypatch.setattr(ST, "read_pdf", lambda p: (fake[p], []))
+    day1.attach_file(db, folder, octo, oct_pdf, "credit")
+    day1.build_packages(db, folder, octo)
+    db.update_cycle_customer(octo["id"], "90000001", matched=1)   # 90000003 did not reconcile
+
+    day1.attach_file(db, folder, nov, nov_pdf, "credit")
+    day1.build_packages(db, folder, nov)
+    c1 = db.cycle_customer(nov["id"], "90000001")
+    assert "الرصيد الافتتاحي 590.00" in c1["warning"] and "600.00" in c1["warning"]
+    c3 = db.cycle_customer(nov["id"], "90000003")
+    assert "يُرفق كشف الشهر السابق" in c3["warning"]
+    merged = os.path.join(folder.path, c3["statement"])
+    assert len(PdfReader(merged).pages) == 3   # October's 2 pages + November's 1 page
