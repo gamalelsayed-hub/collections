@@ -208,7 +208,15 @@ class DB:
         if rid:
             r = self.con.execute("SELECT * FROM reps WHERE id=?", (rid,)).fetchone()
             return dict(r) if r else None
-        return None
+        if not rep_name:
+            return None
+        # not linked yet: same name, or a unique match of the short name (saved as a link)
+        from .reps import suggest_rep
+        reps = self.reps()
+        rep = next((r for r in reps if norm(r["name"]) == norm(rep_name)), None) or suggest_rep(rep_name, reps)
+        if rep:
+            self.set_alias(rep_name, rep["id"])
+        return rep
 
     # ---------------- customers
     def customers(self):

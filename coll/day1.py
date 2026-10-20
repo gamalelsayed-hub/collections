@@ -147,7 +147,7 @@ def build_packages(db, folder, cycle):
         old = os.path.join(folder.path, c["prepend"]) if c["prepend"] else ""
         if old and os.path.exists(old):
             parts.insert(0, (old, None))
-        ST.write_pdf(parts, pdf)
+        ST.write_pdf(parts, pdf, renumber=True)
         db.update_cycle_customer(cycle["id"], c["code"], statement=os.path.relpath(pdf, folder.path))
         entry = by_rep.setdefault(key, {"rep": key, "email": rep["email"] if rep else "", "rep_record": rep,
                                         "customers": [], "dir": rep_dir})

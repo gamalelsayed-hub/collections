@@ -375,8 +375,14 @@ class RepsPage(QWidget):
             self.win.db.save_rep(r)
         self.win.db.log("استيراد المناديب", f"{len(reps)} مندوب")
         self.load()
-        self.suggest(silent=True)
-        info(self, f"تم استيراد {len(reps)} مندوب، واقتراح ربط الأسماء — راجع تبويب «ربط الأسماء».")
+        n = self.suggest(silent=True)
+        for i in range(self.alias.rowCount()):   # save the links right away
+            self.win.db.set_alias(self.alias.item(i, 0).text(), self.alias.cellWidget(i, 2).currentData())
+        missing = [self.alias.item(i, 0).text() for i in range(self.alias.rowCount())
+                   if not self.alias.cellWidget(i, 2).currentData()]
+        info(self, f"تم استيراد {len(reps)} مندوب وربط {n} اسم تلقائيًا."
+             + (f"\n\nأسماء بدون ربط ({len(missing)}): {'، '.join(missing)}\nاربطها يدويًا من تبويب «ربط الأسماء» "
+                "ثم اضغط «حفظ الربط»." if missing else ""))
 
     def suggest(self, silent=False):
         reps = self.win.db.reps()
@@ -391,6 +397,7 @@ class RepsPage(QWidget):
                 n += 1
         if not silent:
             info(self, f"تم اقتراح {n} ربط — راجعها ثم اضغط «حفظ الربط».")
+        return n
 
     def save_alias(self):
         if not self.win.can_edit():

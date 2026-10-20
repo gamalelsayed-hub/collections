@@ -149,16 +149,72 @@ def read_pdf(path):
     return sections, unknown_pages
 
 
-def write_pdf(parts, out_path):
-    """parts: [(source path, [pages] or None for all)] → one PDF."""
+FOOTER_WORDS = ("بواسطة", "التقرير")
+
+
+def footer_top(page):
+    """Top (points from the page top) of the system's footer band: report date, "634 / 980", printed by.
+    None when the page has no such band."""
+    h = page.height
+    tops = [w["top"] for w in page.extract_words()
+            if w["top"] > h * 0.8 and fix_pdf_word(w["text"]) in FOOTER_WORDS]
+    if not tops:
+        return None
+    top = min(tops)
+    rules = [ln["top"] for ln in page.lines + page.rects
+             if top - 20 < ln["top"] < top and ln["x1"] - ln["x0"] > page.width * 0.5]
+    return (min(rules) if rules else top) - 2
+
+
+def _cover(width, height, left, bottom, top, text):
+    """A page that hides everything below `top` and writes `text` (the new page number) in the middle."""
+    from pypdf import PdfWriter
+    from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+    w = PdfWriter()
+    page = w.add_blank_page(width, height)
+    font = DictionaryObject({NameObject("/Type"): NameObject("/Font"), NameObject("/Subtype"): NameObject("/Type1"),
+                             NameObject("/BaseFont"): NameObject("/Helvetica")})
+    page[NameObject("/Resources")] = DictionaryObject({NameObject("/Font"): DictionaryObject({NameObject("/F1"): font})})
+    band = height - top
+    x = left + (width - len(text) * 5) / 2
+    y = bottom + max(band - 16, 6)
+    data = (f"q 1 1 1 rg {left:.2f} {bottom:.2f} {width:.2f} {band:.2f} re f "
+            f"0 0 0 rg BT /F1 10 Tf {x:.2f} {y:.2f} Td ({text}) Tj ET Q")
+    stream = DecodedStreamObject()
+    stream.set_data(data.encode("ascii"))
+    page[NameObject("/Contents")] = w._add_object(stream)
+    return page
+
+
+def write_pdf(parts, out_path, renumber=False):
+    """parts: [(source path, [pages] or None for all)] → one PDF.
+    renumber: hide the system's footer band (it shows the page number of the whole report, e.g. 634 / 980)
+    and number the pages of this statement instead (1 / 3, 2 / 3...)."""
+    import pdfplumber
     from pypdf import PdfReader, PdfWriter
     writer = PdfWriter()
     readers = {}
+    tops = []
     for src, pages in parts:
         if src not in readers:
             readers[src] = PdfReader(src)
-        for p in (range(len(readers[src].pages)) if pages is None else pages):   # None = all pages
+        pages = range(len(readers[src].pages)) if pages is None else pages   # None = all pages
+        for p in pages:
             writer.add_page(readers[src].pages[p])
+        if renumber:
+            with pdfplumber.open(src) as pdf:
+                tops += [footer_top(pdf.pages[p]) for p in pages]
+    if renumber:
+        found = [t for t in tops if t is not None]
+        default = max(set(found), key=found.count) if found else None   # pages already cleaned before
+        total = len(writer.pages)
+        for i, page in enumerate(writer.pages):
+            top = tops[i] if tops[i] is not None else default
+            if top is None:
+                continue
+            box = page.mediabox
+            page.merge_page(_cover(float(box.width), float(box.height), float(box.left), float(box.bottom), top,
+                                   f"{i + 1} / {total}"))
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "wb") as f:
         writer.write(f)
