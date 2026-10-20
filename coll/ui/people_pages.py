@@ -169,19 +169,23 @@ class CustomersPage(QWidget):
                              f"{sum(1 for c in vis if c['has_pn'])}")
 
     def import_excel(self):
-        """Excel with columns: رقم العميل + any of السجل التجاري، الجوال، الإيميل، سند لأمر، رقم السند، قيمة السند."""
+        """Excel with رقم العميل + any of: اسم العميل، المندوب، الفرع، النوع، السجل التجاري، الجوال، الإيميل،
+        سند لأمر (نعم/لا أو رقم السند نفسه)، رقم السند، قيمة السند، تاريخ السند. New customers are added."""
         if not self.win.can_edit():
             return
         from ..aging import read_table
+        from ..db import CUSTOMER_FIELDS
         from ..textutil import code_text, to_number
         path, _ = QFileDialog.getOpenFileName(self, "ملف بيانات العملاء", QSettings().value("last_dir", ""),
                                               "Excel (*.xlsx *.xlsm)")
         if not path:
             return
         rows = read_table(path)
-        heads = {"code": ("رقم العميل", "كود العميل"), "cr_no": ("السجل",), "phone": ("الجوال", "الهاتف"),
-                 "email": ("الإيميل", "الايميل", "البريد"), "has_pn": ("سند لأمر", "سند لامر"),
-                 "pn_no": ("رقم السند",), "pn_value": ("قيمة السند",), "pn_date": ("تاريخ السند",)}
+        heads = {"code": ("رقم العميل", "كود العميل"), "name": ("اسم العميل",), "rep_name": ("المندوب",),
+                 "branch": ("الفرع",), "region": ("المنطقة",), "ctype": ("نوع العميل", "النوع"),
+                 "cr_no": ("السجل",), "phone": ("الجوال", "الهاتف"), "email": ("الإيميل", "الايميل", "البريد"),
+                 "pn_no": ("رقم السند",), "pn_value": ("قيمة السند",), "pn_date": ("تاريخ السند",),
+                 "has_pn": ("سند لأمر", "سند لامر", "سند امر")}
         cols, first = {}, None
         for i, r in enumerate(rows[:15]):
             cells = [str(v or "").strip() for v in r]
@@ -199,28 +203,47 @@ class CustomersPage(QWidget):
             return
         db = self.win.db
         existing = db.customers()
-        n = 0
+        added, seen = 0, {}
+
+        def text(v):
+            return code_text(v) if isinstance(v, (int, float)) else str(v).strip()
         for r in rows[first:]:
             code = code_text(r[cols["code"]])
-            if code not in existing:
+            if not code or not any(ch.isdigit() for ch in code):
                 continue
-            c = existing[code]
+            c = existing.get(code)
+            if c is None:
+                c = {f: "" for f in CUSTOMER_FIELDS}
+                c.update(code=code, has_pn=0, pn_value=None)
+                added += 1
             for k, col in cols.items():
-                if k == "code" or r[col] in (None, ""):
+                v = r[col]
+                if k == "code" or v in (None, ""):
                     continue
                 if k == "pn_value":
-                    c[k] = to_number(r[col])
+                    c[k] = to_number(v)
                 elif k == "has_pn":
-                    c[k] = 1 if str(r[col]).strip() in ("نعم", "1", "yes", "Yes", "✓", "True") else 0
+                    t = text(v)
+                    if t in ("نعم", "1", "yes", "Yes", "✓", "True", "موجود"):
+                        c["has_pn"] = 1
+                    elif t in ("0", "لا", "no", "No", "False", "-", "—", "لايوجد", "لا يوجد"):
+                        c["has_pn"] = 0
+                    else:   # the column holds the note number itself
+                        c["has_pn"] = 1
+                        if "pn_no" not in cols or not r[cols["pn_no"]]:
+                            c["pn_no"] = t
                 else:
-                    c[k] = code_text(r[col]) if isinstance(r[col], float) else str(r[col]).strip()
+                    c[k] = text(v)
             if c.get("pn_value") and "has_pn" not in cols:
                 c["has_pn"] = 1
+            existing[code] = c
             db.save_customer(c)
-            n += 1
-        db.log("استيراد بيانات العملاء", f"{os.path.basename(path)}: {n} عميل")
+            seen[code] = c
+        n = len(seen)
+        pn = sum(1 for c in seen.values() if c.get("has_pn"))
+        db.log("استيراد بيانات العملاء", f"{os.path.basename(path)}: {n} عميل، {added} جديد")
         self.load()
-        info(self, f"تم تحديث بيانات {n} عميل.")
+        info(self, f"تم استيراد {n} عميل ({added} جديد، {n - added} تحديث)، منهم {pn} عليهم سند لأمر.")
 
 
 # ================================================================== reps
