@@ -56,6 +56,7 @@ MIGRATIONS = [
     ("stmt_sections", "opening", "REAL"),
     ("stmt_sections", "date_from", "TEXT DEFAULT ''"),
     ("stmt_sections", "date_to", "TEXT DEFAULT ''"),
+    ("cycles", "start_date", "TEXT DEFAULT ''"),          # Day 1 of the collection period (receipts count from it)
     ("letters", "rep_name", "TEXT DEFAULT ''"),
     ("letters", "cancel_reason", "TEXT DEFAULT ''"),
 ]
@@ -423,9 +424,19 @@ class DB:
         self.con.execute("DELETE FROM receipts WHERE cycle_id=? AND source=?", (cycle_id, source))
         self.con.commit()
 
-    def paid_by_code(self, cycle_id):
-        return {r[0]: r[1] for r in self.con.execute(
-            "SELECT code, SUM(amount) FROM receipts WHERE cycle_id=? GROUP BY code", (cycle_id,))}
+    def paid_by_code(self, cycle_id, start="", end=""):
+        q, args = "SELECT code, SUM(amount) FROM receipts WHERE cycle_id=?", [cycle_id]
+        if start:
+            q += " AND date>=?"
+            args.append(start)
+        if end:
+            q += " AND date<=?"
+            args.append(end)
+        return {r[0]: r[1] for r in self.con.execute(q + " GROUP BY code", args)}
+
+    def set_cycle_start(self, cycle_id, start):
+        self.con.execute("UPDATE cycles SET start_date=? WHERE id=?", (start, cycle_id))
+        self.con.commit()
 
     # ---------------- negotiations
     def negotiations(self, code=None, active_only=False):

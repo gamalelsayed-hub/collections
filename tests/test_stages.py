@@ -119,3 +119,28 @@ def test_full_flow(tmp_path, qapp):
     nov = db.cycle("2026-11")
     c = db.cycle_customer(nov["id"], "90000003")
     assert c["level"] == 2 and c["pn_letter"] == 1 and "مستمر" in c["carried"]
+
+
+def test_receipts_period(tmp_path):
+    folder, db, cyc = setup_cycle(tmp_path)          # October cycle, aging uploaded 1 October
+    assert stages.cycle_start(db, cyc) == "2026-10-01"
+    assert stages.stage_end(db, cyc, "finance") == "2026-10-07"
+    assert stages.stage_end(db, cyc, "legal") == "2026-10-14"
+    f = tmp_path / "r.pdf"
+    f.write_bytes(b"x")
+    recs = [receipts.Receipt("1", "2026-09-30", "1140101", "", "90000001", 50.0),    # before Day 1
+            receipts.Receipt("2", "2026-10-05", "1140101", "", "90000001", 100.0),   # Day 7 period
+            receipts.Receipt("3", "2026-10-10", "1140101", "", "90000001", 300.0)]   # next stage
+    res = stages.add_receipts(db, folder, cyc, recs, str(f), "2026-10-01", "2026-10-07")
+    assert (res["before"], res["after"], res["added"]) == (1, 1, 1)
+    assert db.cycle_customer(cyc["id"], "90000001")["paid"] == 100.0
+    # the same file again in the Day 14 stage: only the new voucher is added, cumulative from Day 1
+    res = stages.add_receipts(db, folder, cyc, recs, str(f), "2026-10-01", "2026-10-14")
+    assert (res["added"], res["duplicates"]) == (1, 1)
+    assert db.cycle_customer(cyc["id"], "90000001")["paid"] == 400.0
+    # the Day 7 decision is still based on receipts up to the 7th
+    stages.recompute_paid(db, cyc, "2026-10-01", "2026-10-07")
+    assert db.cycle_customer(cyc["id"], "90000001")["paid"] == 100.0
+    # September aging uploaded in October → the period starts on 1 October
+    db.create_cycle("2026-09", "aging.xlsx", "2026-10-20", [])
+    assert stages.cycle_start(db, db.cycle("2026-09")) == "2026-10-01"

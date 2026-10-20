@@ -112,8 +112,33 @@ def set_matched(db, cycle, code, value, note=""):
 
 
 # ------------------------------------------------------------------ receipts
-def add_receipts(db, folder, cycle, recs, path):
-    """Store receipts of one file. Returns dict(added, duplicates, outside: codes not required in the cycle)."""
+STAGE_DAYS = {"finance": "day_finance", "legal": "day_legal", "action": "day_action"}
+
+
+def cycle_start(db, cycle):
+    """Day 1 of the collection period. Saved per cycle; by default the 1st of the month after the aging month when
+    the aging report was uploaded after that month (e.g. September aging uploaded in October → 1 October)."""
+    cyc = db.cycle(cycle["month"])
+    if cyc.get("start_date"):
+        return cyc["start_date"]
+    y, m = int(cycle["month"][:4]), int(cycle["month"][5:7])
+    nxt = f"{y + (m == 12):04d}-{m % 12 + 1:02d}-01"
+    return nxt if (cyc.get("aging_date") or "") >= nxt else f"{cycle['month']}-01"
+
+
+def stage_end(db, cycle, stage):
+    """Last day whose receipts count for a stage: start + stage day − 1 (1 Oct + 7 → 7 Oct)."""
+    from datetime import timedelta
+    start = date.fromisoformat(cycle_start(db, cycle))
+    return (start + timedelta(days=int(db.setting_num(STAGE_DAYS[stage])) - 1)).isoformat()
+
+
+def add_receipts(db, folder, cycle, recs, path, start="", end=""):
+    """Store the receipts of one file dated within [start, end]; the others are left for their own stage
+    (re-uploading later never counts a voucher twice). Returns counts for the screen."""
+    before = [r for r in recs if start and r.date < start]
+    after = [r for r in recs if end and r.date > end]
+    recs = [r for r in recs if (not start or r.date >= start) and (not end or r.date <= end)]
     dest = folder.files_dir(cycle["month"], "receipts")
     target = os.path.join(dest, safe_name(os.path.basename(path)))
     if os.path.abspath(path) != os.path.abspath(target):
@@ -122,15 +147,18 @@ def add_receipts(db, folder, cycle, recs, path):
     added = db.add_receipts(cycle["id"], recs, rel)
     required = {c["code"] for c in db.cycle_customers(cycle["id"], required_only=True)}
     outside = sorted({r.code for r in recs if r.code not in required})
-    recompute_paid(db, cycle)
+    recompute_paid(db, cycle, start, end)
     db.log("رفع سندات قبض", f"{os.path.basename(path)}: {added} سند جديد بمبلغ "
-                           f"{sum(r.amount for r in recs):,.2f}", cycle_id=cycle["id"])
+                           f"{sum(r.amount for r in recs):,.2f}" + (f" (الفترة {start} — {end})" if end else ""),
+           cycle_id=cycle["id"])
     return {"added": added, "duplicates": len(recs) - added, "outside": outside,
-            "total": sum(r.amount for r in recs if r.code in required)}
+            "total": sum(r.amount for r in recs if r.code in required), "before": len(before), "after": len(after),
+            "count": len(recs)}
 
 
-def recompute_paid(db, cycle):
-    paid = db.paid_by_code(cycle["id"])
+def recompute_paid(db, cycle, start="", end=""):
+    """Paid = receipts dated within the period up to the end of the selected stage (cumulative from Day 1)."""
+    paid = db.paid_by_code(cycle["id"], start, end)
     for c in db.cycle_customers(cycle["id"]):
         p = paid.get(c["code"], 0.0)
         base = c["overdue"] or 0

@@ -126,13 +126,28 @@ class FollowPage(QWidget):
             b = QPushButton(text)
             b.clicked.connect(fn)
             v2.addWidget(b)
+        per = QGridLayout()
+        self.p_start = QDateEdit()
+        self.p_end = QDateEdit()
+        for d in (self.p_start, self.p_end):
+            d.setCalendarPopup(True)
+            d.setDisplayFormat("dd/MM/yyyy")
+        self.p_start.setToolTip("أول يوم في فترة التحصيل لهذه الدورة (يُحفظ)")
+        self.p_end.setToolTip("آخر يوم يُحسب للمرحلة المختارة — يتغير تلقائيًا مع المرحلة")
+        per.addWidget(QLabel("الفترة من:"), 0, 0)
+        per.addWidget(self.p_start, 0, 1)
+        per.addWidget(QLabel("إلى:"), 0, 2)
+        per.addWidget(self.p_end, 0, 3)
+        v2.addLayout(per)
+        self.p_start.dateChanged.connect(self._start_changed)
+        self.p_end.dateChanged.connect(self._end_changed)
         v2.addStretch()
         b3, v3 = step_box("٣) الخطابات")
         row = QHBoxLayout()
         self.stage = QComboBox()
         for key, (lvl, name) in stages.STAGES.items():
             self.stage.addItem(name, key)
-        self.stage.currentIndexChanged.connect(self.refresh)
+        self.stage.currentIndexChanged.connect(self._stage_changed)
         self.date = QDateEdit(QDate.currentDate())
         self.date.setCalendarPopup(True)
         self.date.setDisplayFormat("dd/MM/yyyy")
@@ -210,10 +225,43 @@ class FollowPage(QWidget):
             self.stage.blockSignals(True)
             self.stage.setCurrentIndex(min(lvl, 2))
             self.stage.blockSignals(False)
+            self._set_period()
         self.refresh()
 
     def stage_key(self):
         return self.stage.currentData()
+
+    # ---------------------------------------------------------------- receipts period
+    def period(self):
+        return self.p_start.date().toString("yyyy-MM-dd"), self.p_end.date().toString("yyyy-MM-dd")
+
+    def _set_period(self):
+        """Start from the cycle, end from the selected stage; recompute paid for that period."""
+        if not self.cycle:
+            return
+        db = self.win.db
+        for w in (self.p_start, self.p_end):
+            w.blockSignals(True)
+        self.p_start.setDate(QDate.fromString(stages.cycle_start(db, self.cycle), "yyyy-MM-dd"))
+        self.p_end.setDate(QDate.fromString(stages.stage_end(db, self.cycle, self.stage_key()), "yyyy-MM-dd"))
+        for w in (self.p_start, self.p_end):
+            w.blockSignals(False)
+        stages.recompute_paid(db, self.cycle, *self.period())
+
+    def _stage_changed(self):
+        self._set_period()
+        self.refresh()
+
+    def _start_changed(self):
+        if self.cycle and self.win.can_edit(silent=True):
+            self.win.db.set_cycle_start(self.cycle["id"], self.p_start.date().toString("yyyy-MM-dd"))
+            self._set_period()
+            self.refresh()
+
+    def _end_changed(self):
+        if self.cycle:
+            stages.recompute_paid(self.win.db, self.cycle, *self.period())
+            self.refresh()
 
     def refresh(self):
         db = self.win.db
@@ -469,8 +517,15 @@ class FollowPage(QWidget):
             except Exception as e:  # noqa: BLE001
                 lines.append(f"⛔ {os.path.basename(p)}: تعذر القراءة ({e})")
                 continue
-            res = stages.add_receipts(db, self.win.folder, self.cycle, recs, p)
-            lines.append(f"🧾 {os.path.basename(p)}: {len(recs)} سند عميل ({res['added']} جديد"
+            start, end = self.period()
+            res = stages.add_receipts(db, self.win.folder, self.cycle, recs, p, start, end)
+            if res["before"] or res["after"]:
+                lines.append(f"📅 الفترة المقبولة {self.p_start.date().toString('dd/MM/yyyy')} — "
+                             f"{self.p_end.date().toString('dd/MM/yyyy')}: "
+                             + (f"رُفض {res['before']} سند قبل بداية الدورة. " if res["before"] else "")
+                             + (f"رُفض {res['after']} سند بعد نهاية المرحلة — ارفعها مع المرحلة القادمة."
+                                if res["after"] else ""))
+            lines.append(f"🧾 {os.path.basename(p)}: {res['count']} سند عميل في الفترة ({res['added']} جديد"
                          + (f"، {res['duplicates']} مكرر لم يُحسب مرتين" if res["duplicates"] else "") + ")، "
                          f"استُبعد {excluded} سطر تحويلات داخلية. المحسوب للعملاء المطلوبين: {money(res['total'])}")
             if res["outside"]:
@@ -529,7 +584,7 @@ class FollowPage(QWidget):
                 if self.win.can_edit() and ask(dlg, f"حذف كل سندات الملف {cb.currentText()} من الدورة؟"):
                     db.delete_receipts(self.cycle["id"], cb.currentData())
                     db.log("حذف سندات قبض", cb.currentText(), cycle_id=self.cycle["id"])
-                    stages.recompute_paid(db, self.cycle)
+                    stages.recompute_paid(db, self.cycle, *self.period())
                     dlg.accept()
                     self.refresh()
             b.clicked.connect(remove)
