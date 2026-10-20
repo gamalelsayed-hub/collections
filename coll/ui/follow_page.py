@@ -16,6 +16,8 @@ from .widgets import (NAVY, ColumnMapDialog, ask, color_item, error, info, money
 STATUS_COLORS = {"خطاب مالي": "#b54708", "خطاب قانوني — إيقاف بيع": "#b42318", "إحالة السند للتنفيذ": "#7a271a",
                  "إنذار دعوى": "#7a271a", "تحت التفاوض": "#6941c6", "مستبعد": "#667085", "مطابق": "#067647",
                  "غير مطابق": "#b42318"}
+# letter types that can replace each other for one customer
+SWITCH = {"1004": "1004PN", "1004PN": "1004", "1005": "1006", "1006": "1005"}
 COLS = ["✔", "رقم العميل", "اسم العميل", "المندوب", "المتأخر يوم 1", "المسدد", "النسبة", "المطابقة",
         "الحالة", "الخطاب المقترح", "مبلغ الخطاب", "السبب / ملاحظات"]
 
@@ -92,6 +94,7 @@ class FollowPage(QWidget):
         self.cycle = None
         self.rows = []
         self.packages = []
+        self.kind_override = {}   # (cycle, code) → letter type chosen by the user for this issue
         lay = QVBoxLayout(self)
         top = QHBoxLayout()
         top.addWidget(QLabel("الدورة:"))
@@ -224,6 +227,11 @@ class FollowPage(QWidget):
         key = self.stage_key()
         if self.view.currentIndex() == 0:
             self.rows = stages.candidates(db, self.cycle, key)
+            for r in self.rows:
+                k = self.kind_override.get((self.cycle["id"], r["code"]))
+                if k and SWITCH.get(r["kind"]) == k:
+                    r["kind"] = k
+                    r["reason"] = (r["reason"] + "، نوع الخطاب مختار يدويًا").strip("، ")
         else:
             thr = stages.threshold(db)
             self.rows = []
@@ -356,6 +364,10 @@ class FollowPage(QWidget):
             acts.append(("↩ إلغاء الاستبعاد", lambda: self._include(r)))
         else:
             acts.append(("🚫 استبعاد من الإجراءات (مع سبب)", lambda: self._exclude(r)))
+        if self.view.currentIndex() == 0 and r["kind"] in SWITCH:
+            other = SWITCH[r["kind"]]
+            acts.append((f"🔁 تغيير نوع الخطاب إلى: {stages.KIND_NAMES[other]} ({other[:4]})",
+                         lambda: self._switch(r, other)))
         acts += [("🤝 بدء تفاوض (اتفاقية 1002)", lambda: self.negotiate(r)), None,
                  ("👤 فتح بطاقة العميل", lambda: (self.win.open_customer(r["code"]), self.refresh()))]
         for a in acts:
@@ -389,6 +401,10 @@ class FollowPage(QWidget):
             self.refresh()
         elif ok:
             warn(self, "لازم تكتب السبب.")
+
+    def _switch(self, r, kind):
+        self.kind_override[(self.cycle["id"], r["code"])] = kind
+        self.refresh()
 
     def _include(self, r):
         if self.win.can_edit():
