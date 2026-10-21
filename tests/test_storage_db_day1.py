@@ -63,7 +63,7 @@ def test_day1_flow(tmp_path, monkeypatch):
                  ST.Section("90000004", "عميل د", "1140101", "العملاء", credit, [2, 3], 300.0)],
         custody: [ST.Section("90000004", "عميل د", "1140120", "عهدة مبيعات خالد", custody, [0], 70.0)],
     }
-    monkeypatch.setattr(ST, "read_pdf", lambda p: (fake[p], []))
+    monkeypatch.setattr(ST, "read_pdf", lambda p, progress=None: (fake[p], []))
     r = day1.attach_file(db, folder, cycle, credit, "credit")
     assert len(r.attached) == 2 and r.ignored == ["90000002"]
     day1.attach_file(db, folder, cycle, custody, "custody", "خالد")
@@ -108,7 +108,7 @@ def test_next_month_statements(tmp_path, monkeypatch):
                       sec("90000003", oct_pdf, [1, 2], 150.0, 0.0, "2026-01-01", "2026-10-31")],
             nov_pdf: [sec("90000001", nov_pdf, [0], 650.0, 590.0, "2026-11-01", "2026-11-30"),
                       sec("90000003", nov_pdf, [1], 150.0, 150.0, "2026-11-01", "2026-11-30")]}
-    monkeypatch.setattr(ST, "read_pdf", lambda p: (fake[p], []))
+    monkeypatch.setattr(ST, "read_pdf", lambda p, progress=None: (fake[p], []))
     day1.attach_file(db, folder, octo, oct_pdf, "credit")
     day1.build_packages(db, folder, octo)
     db.update_cycle_customer(octo["id"], "90000001", matched=1)   # 90000003 did not reconcile
@@ -147,7 +147,7 @@ def test_aging_page_added(tmp_path, monkeypatch, qapp):
     db.create_cycle("2026-10", "aging.xlsx", "2026-10-01", aging.group_customers(recs, 30, 60))
     cycle = db.cycle("2026-10")
     src = blank_pdf(tmp_path / "s.pdf", 2)
-    monkeypatch.setattr(ST, "read_pdf", lambda p: ([ST.Section("90000001", "عميل أ", "1140101", "العملاء", src,
+    monkeypatch.setattr(ST, "read_pdf", lambda p, progress=None: ([ST.Section("90000001", "عميل أ", "1140101", "العملاء", src,
                                                                [0, 1], 600.0)], []))
     day1.attach_file(db, folder, cycle, src, "credit")
     day1.build_packages(db, folder, cycle)
@@ -164,7 +164,7 @@ def test_aging_page_skipped_when_totals_differ(tmp_path, monkeypatch, qapp):
     db.create_cycle("2026-10", "aging.xlsx", "2026-10-01", aging.group_customers(recs, 30, 60))
     cycle = db.cycle("2026-10")
     src = blank_pdf(tmp_path / "s.pdf", 2)
-    monkeypatch.setattr(ST, "read_pdf", lambda p: ([ST.Section("90000001", "عميل أ", "1140101", "العملاء", src,
+    monkeypatch.setattr(ST, "read_pdf", lambda p, progress=None: ([ST.Section("90000001", "عميل أ", "1140101", "العملاء", src,
                                                                [0, 1], 650.0)], []))   # aging total is 600
     day1.attach_file(db, folder, cycle, src, "credit")
     day1.build_packages(db, folder, cycle)

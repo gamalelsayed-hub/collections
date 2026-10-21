@@ -122,14 +122,18 @@ def read_page(page):
     return info
 
 
-def read_pdf(path):
-    """Split a statements PDF into sections (one per customer and control account)."""
+def read_pdf(path, progress=None):
+    """Split a statements PDF into sections (one per customer and control account).
+    progress(done, total) is called after each page."""
     import pdfplumber
     sections = []
     unknown_pages = []
     with pdfplumber.open(path) as pdf:
         current = None
+        total = len(pdf.pages)
         for i, page in enumerate(pdf.pages):
+            if progress:
+                progress(i + 1, total)
             info = read_page(page)
             code = info["code"] or (current.code if current else None)
             account = info["account"] or (current.account if current else None)
@@ -186,24 +190,57 @@ def _cover(width, height, left, bottom, top, text):
     return page
 
 
-def write_pdf(parts, out_path, renumber=False):
+class PdfCache:
+    """Keeps big source files open while many statements are cut from them (a 980-page file is opened once,
+    not once per customer). Use as a context manager."""
+
+    def __init__(self):
+        self.readers, self.plumbers, self.tops = {}, {}, {}
+
+    def reader(self, src):
+        from pypdf import PdfReader
+        if src not in self.readers:
+            self.readers[src] = PdfReader(src)
+        return self.readers[src]
+
+    def footer(self, src, page):
+        """The footer band sits at the same place on every page of a report: found once per file (reading a whole
+        page costs ~0.4 s, which adds up to minutes over hundreds of statements)."""
+        import pdfplumber
+        if self.tops.get(src) is None:
+            if src not in self.plumbers:
+                self.plumbers[src] = pdfplumber.open(src)
+            self.tops[src] = footer_top(self.plumbers[src].pages[page])
+        return self.tops[src]
+
+    def close(self):
+        for p in self.plumbers.values():
+            p.close()
+        self.readers, self.plumbers = {}, {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
+def write_pdf(parts, out_path, renumber=False, cache=None):
     """parts: [(source path, [pages] or None for all)] → one PDF.
     renumber: hide the system's footer band (it shows the page number of the whole report, e.g. 634 / 980)
-    and number the pages of this statement instead (1 / 3, 2 / 3...)."""
-    import pdfplumber
-    from pypdf import PdfReader, PdfWriter
+    and number the pages of this statement instead (1 / 3, 2 / 3...). cache: a PdfCache shared between calls."""
+    from pypdf import PdfWriter
+    own = cache is None
+    cache = cache or PdfCache()
     writer = PdfWriter()
-    readers = {}
     tops = []
     for src, pages in parts:
-        if src not in readers:
-            readers[src] = PdfReader(src)
-        pages = range(len(readers[src].pages)) if pages is None else pages   # None = all pages
+        reader = cache.reader(src)
+        pages = range(len(reader.pages)) if pages is None else pages   # None = all pages
         for p in pages:
-            writer.add_page(readers[src].pages[p])
+            writer.add_page(reader.pages[p])
         if renumber:
-            with pdfplumber.open(src) as pdf:
-                tops += [footer_top(pdf.pages[p]) for p in pages]
+            tops += [cache.footer(src, p) for p in pages]
     if renumber:
         found = [t for t in tops if t is not None]
         default = max(set(found), key=found.count) if found else None   # pages already cleaned before
@@ -218,6 +255,8 @@ def write_pdf(parts, out_path, renumber=False):
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "wb") as f:
         writer.write(f)
+    if own:
+        cache.close()
     return out_path
 
 

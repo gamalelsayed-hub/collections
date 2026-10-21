@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QDialogButtonBo
 from .. import aging, day1, mailer
 from ..reps import suggest_rep
 from .mail_preview import MailPreviewDialog
-from .widgets import (NAVY, STATUS_COLORS, ColumnMapDialog, MonthDialog, ask, color_item, error, info, money,
+from .widgets import (NAVY, STATUS_COLORS, ColumnMapDialog, MonthDialog, Progress, ask, color_item, error, info, money,
                       month_label, ro, styled_table, warn)
 
 STAGES = [("day_statements", "يوم 1", "تجهيز الكشوف وإرسالها للمناديب"),
@@ -272,6 +272,9 @@ class CyclePage(QWidget):
                 kinds.setdefault(g["skip"].split(":")[0] if ":" in g["skip"] else "ضمان بنكي", []).append(g)
             msg.append(f"• {len(skipped)} عميل مستثنى بالإعدادات: "
                        + "، ".join(f"{k} ({len(v)})" for k, v in kinds.items()))
+        if getattr(db, "carried_forced", None):
+            msg.append(f"• {len(db.carried_forced)} عميل مستمر في مراحل الخطابات من الدورة السابقة بقي في الدورة "
+                       "حتى لو كان خارج الحدود.")
         if cut:
             msg.append(f"• الدورة محددة بأكبر {limit} عميل متأخر — {len(cut)} عميل آخر لم يدخل هذا الشهر "
                        f"بمتأخر {money(sum(g['overdue'] for g in cut))}.")
@@ -298,8 +301,11 @@ class CyclePage(QWidget):
             prev = db.previous_cycle(month)
             if prev:
                 thr = db.setting_num("pay_threshold")
+                paid = db.paid_by_code(prev["id"])        # all of last month's receipts
                 for c in db.cycle_customers(prev["id"], required_only=True):
-                    if c["matched"] == 1 and (c["pct"] or 0) >= thr and c["code"] not in codes:
+                    base = c["overdue"] or 0
+                    pct = paid.get(c["code"], 0) / base if base > 0.005 else 1.0
+                    if c["matched"] == 1 and pct >= thr and not c["level"] and c["code"] not in codes:
                         codes[c["code"]] = f"شهر راحة: طابق وسدد في دورة {prev['month']}"
         return {"skip_codes": codes, "skip_reps": db.setting_list("skip_reps"),
                 "skip_classes": db.setting_list("skip_classes"), "guarantee": db.setting("guarantee_skip") == "1"}
@@ -344,10 +350,12 @@ class CyclePage(QWidget):
         QSettings().setValue("last_dir", os.path.dirname(paths[0]))
         QApplication.setOverrideCursor(Qt.WaitCursor)
         lines = []
+        bar = Progress(self, "قراءة كشوف الحساب")
         try:
             for p in paths:
+                bar.title = f"قراءة {os.path.basename(p)} (صفحة)"
                 try:
-                    r = day1.attach_file(self.win.db, self.win.folder, self.cycle, p, mode, rep_name)
+                    r = day1.attach_file(self.win.db, self.win.folder, self.cycle, p, mode, rep_name, bar)
                 except Exception as e:  # noqa: BLE001
                     lines.append(f"⛔ {os.path.basename(p)}: تعذر القراءة ({e})")
                     continue
@@ -360,6 +368,7 @@ class CyclePage(QWidget):
                 if r.unread_pages:
                     lines.append(f"   ⚠ صفحات لم يُقرأ منها رقم العميل: {', '.join(str(x + 1) for x in r.unread_pages)}")
         finally:
+            bar.close()
             QApplication.restoreOverrideCursor()
         self.refresh()
         missing = sum(1 for r in self.rows if r["status"] == "كشف ناقص")
@@ -375,12 +384,15 @@ class CyclePage(QWidget):
         if missing and not ask(self, f"يوجد {missing} كشف ناقص. تجهيز الملفات بالكشوف الموجودة فقط؟"):
             return
         QApplication.setOverrideCursor(Qt.WaitCursor)
+        bar = Progress(self, "تجهيز كشف كل عميل")
         try:
-            self.packages = day1.build_packages(self.win.db, self.win.folder, self.cycle)
+            self.packages = day1.build_packages(self.win.db, self.win.folder, self.cycle, bar)
         except Exception as e:  # noqa: BLE001
+            bar.close()
             QApplication.restoreOverrideCursor()
             error(self, f"تعذر التجهيز:\n{e}")
             return
+        bar.close()
         QApplication.restoreOverrideCursor()
         no_rep = [p for p in self.packages if not p["rep_record"]]
         no_mail = [p for p in self.packages if p["rep_record"] and not p["email"]]

@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDate
 from .. import mailer, receipts, stages
 from .cycle_page import step_box
 from .mail_preview import MailPreviewDialog
-from .widgets import (NAVY, ColumnMapDialog, ask, color_item, error, info, money, month_label, ro, styled_table,
+from .widgets import (NAVY, ColumnMapDialog, Progress, ask, color_item, error, info, money, month_label, ro, styled_table,
                       warn)
 
 STATUS_COLORS = {"خطاب مالي": "#b54708", "خطاب قانوني — إيقاف بيع": "#b42318", "إحالة السند للتنفيذ": "#7a271a",
@@ -287,7 +287,7 @@ class FollowPage(QWidget):
             masters = db.customers()
             for c in db.cycle_customers(self.cycle["id"], required_only=True):
                 r = dict(c)
-                r.update(eligible=False, kind="", amount=stages.remaining(c),
+                r.update(eligible=False, kind="", amount=stages.remaining(c, db.setting("letter_amount")),
                          reason=c["exclude_reason"] or c["carried"] or "",
                          has_pn=masters.get(c["code"], {}).get("has_pn"))
                 if (c["pct"] or 0) >= thr:
@@ -471,7 +471,7 @@ class FollowPage(QWidget):
     def negotiate(self, r):
         if not self.win.can_edit():
             return
-        dlg = NegotiationDialog(self, r["name"], stages.remaining(r))
+        dlg = NegotiationDialog(self, r["name"], stages.remaining(r, self.win.db.setting("letter_amount")))
         if dlg.exec() != QDialog.Accepted:
             return
         try:
@@ -625,14 +625,17 @@ class FollowPage(QWidget):
                                                               "تكمل بدونها؟"):
             return
         QApplication.setOverrideCursor(Qt.WaitCursor)
+        bar = Progress(self, "إصدار الخطابات")
         try:
             self.packages = stages.issue(db, self.win.folder, self.cycle, items,
-                                         self.date.date().toString("yyyy-MM-dd"), self.stage_key())
+                                         self.date.date().toString("yyyy-MM-dd"), self.stage_key(), bar)
         except Exception as e:  # noqa: BLE001
+            bar.close()
             QApplication.restoreOverrideCursor()
             error(self, f"تعذر إصدار الخطابات:\n{e}")
             self.refresh()
             return
+        bar.close()
         QApplication.restoreOverrideCursor()
         packages = self.packages
         self.refresh()

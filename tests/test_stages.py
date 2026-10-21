@@ -57,7 +57,7 @@ def test_full_flow(tmp_path, qapp):
 
     cands = {c["code"]: c for c in stages.candidates(db, cyc, "finance")}
     assert not cands["90000001"]["eligible"]
-    assert cands["90000003"]["eligible"] and cands["90000003"]["amount"] == 40.0
+    assert cands["90000003"]["eligible"] and cands["90000003"]["amount"] == 140.0   # balance 150 − paid 10
     assert cands["90000004"]["eligible"]
     stages.exclude(db, cyc, "90000004", "اتفاق مع المدير")
     cands = {c["code"]: c for c in stages.candidates(db, cyc, "finance")}
@@ -115,9 +115,11 @@ def test_full_flow(tmp_path, qapp):
 
 def test_receipts_period(tmp_path):
     folder, db, cyc = setup_cycle(tmp_path)          # October cycle, aging uploaded 1 October
-    # working days (default): 1 Oct 2026 is a Thursday; Fridays/Saturdays and holidays are skipped
-    assert stages.stage_end(db, cyc, "finance") == "2026-10-11"
+    # working days (default): 1 Oct 2026 is a Thursday; Fridays and holidays are skipped
+    assert stages.stage_end(db, cyc, "finance") == "2026-10-08"
     db.set_setting("holidays", "05/10/2026")
+    assert stages.stage_end(db, cyc, "finance") == "2026-10-10"
+    db.set_setting("weekend", "4,5")                 # Friday and Saturday
     assert stages.stage_end(db, cyc, "finance") == "2026-10-12"
     db.set_setting("workdays", "0")                  # calendar days
     assert stages.cycle_start(db, cyc) == "2026-10-01"

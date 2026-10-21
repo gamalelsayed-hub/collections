@@ -155,6 +155,8 @@ def stage_end(db, cycle, stage):
     if db.setting("workdays") != "1":
         return (start + timedelta(days=n - 1)).isoformat()
     weekend = {int(x) for x in (db.setting("weekend") or "").split(",") if x.strip().isdigit()}
+    if len(weekend) >= 7:   # every day a holiday: count calendar days instead of looping forever
+        return (start + timedelta(days=n - 1)).isoformat()
     off = holidays(db)
     d, count = start, 0
     while True:
@@ -214,12 +216,19 @@ def include(db, cycle, code):
 
 
 # ------------------------------------------------------------------ letters
-def remaining(c, mode="remaining"):
-    """Default letter amount: overdue left after the receipts, or the whole balance left (setting letter_amount)."""
-    r = (c["overdue"] or 0) - (c["paid"] or 0)
-    if mode == "balance" or r <= 0.005:
-        r = (c["balance"] or 0) - (c["paid"] or 0)
-    return round(max(r, 0.0), 2)
+LETTER_AMOUNTS = {
+    "balance_paid": "الرصيد − السداد",
+    "overdue_paid": "المتأخر − السداد",
+    "balance_full": "كامل الرصيد (بدون خصم السداد)",
+    "overdue_full": "كامل المتأخر (بدون خصم السداد)",
+}
+
+
+def remaining(c, mode="balance_paid"):
+    """Default letter amount (setting letter_amount): the Day 1 balance or overdue, less the receipts or not."""
+    base = c["overdue"] if mode.startswith("overdue") else c["balance"]
+    paid = c["paid"] or 0 if mode.endswith("_paid") else 0
+    return round(max((base or 0) - paid, 0.0), 2)
 
 
 def candidates(db, cycle, stage):
@@ -288,14 +297,16 @@ def render_letter(db, folder, kind, cust, amount, serial, date_iso, prev, out_pa
     return out_path
 
 
-def issue(db, folder, cycle, items, date_iso=None, stage=None):
+def issue(db, folder, cycle, items, date_iso=None, stage=None, progress=None):
     """items: [{code, kind, amount}]. Writes one PDF per letter, grouped by rep, plus one printable PDF and
     one ZIP per rep. Returns packages [{rep, email, rep_record, letters, dir, zip, combined}]."""
     date_iso = date_iso or date.today().isoformat()
     masters = db.customers()
     base = folder.files_dir(cycle["month"], "letters")
     by_rep = {}
-    for it in items:
+    for n, it in enumerate(items):
+        if progress:
+            progress(n, len(items), it.get("name", it["code"]))
         c = db.cycle_customer(cycle["id"], it["code"])
         cust = dict(masters.get(it["code"], {}))
         cust.update(code=c["code"], name=c["name"] or cust.get("name", ""), rep_name=c["rep_name"])
@@ -368,9 +379,10 @@ def cancel_letter(db, cycle_id, serial, reason):
 
 def stop_sale(db, cycle):
     """Customers that must not be sold to (legal letter issued and still below the threshold)."""
-    thr, neg = threshold(db, "legal"), negotiating_codes(db)
+    thr, neg = thresholds_by_level(db), negotiating_codes(db)   # same rule as the customer's status
     return [c for c in db.cycle_customers(cycle["id"], required_only=True)
-            if (c["level"] or 0) >= 2 and (c["pct"] or 0) < thr and not c["excluded"] and c["code"] not in neg]
+            if (c["level"] or 0) >= 2 and (c["pct"] or 0) < thr[c["level"]] and not c["excluded"]
+            and c["code"] not in neg]
 
 
 # ------------------------------------------------------------------ negotiation (form 1002)

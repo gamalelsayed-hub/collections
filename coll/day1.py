@@ -30,12 +30,12 @@ def safe_name(s):
     return re.sub(r'[\\/:*?"<>|]+', "-", str(s)).strip()[:80] or "—"
 
 
-def attach_file(db, folder, cycle, path, mode, rep_name=""):
+def attach_file(db, folder, cycle, path, mode, rep_name="", progress=None):
     """mode: 'credit' (one file for all credit customers) or 'custody' (one file per rep).
     Stores a copy of the file and the sections of the customers that need reconciliation."""
     name = os.path.basename(path)
     path = readable(path)   # repaired copy if the file's ending is damaged
-    sections, unread = ST.read_pdf(path)
+    sections, unread = ST.read_pdf(path, progress)
     res = UploadResult(name, mode, unread_pages=unread)
     cust = {c["code"]: c for c in db.cycle_customers(cycle["id"])}
     src_dir = folder.files_dir(cycle["month"], "sources")
@@ -157,7 +157,7 @@ def rep_of(db, rep_name):
     return rep
 
 
-def build_packages(db, folder, cycle):
+def build_packages(db, folder, cycle, progress=None):
     """Write one PDF per customer (credit + custody merged) and one ZIP per rep with a summary sheet.
     Returns [{rep, email, zip, customers}] and the customers without a rep."""
     rows = review(db, cycle)
@@ -167,9 +167,11 @@ def build_packages(db, folder, cycle):
     shutil.rmtree(base, ignore_errors=True)
     os.makedirs(base, exist_ok=True)
     by_rep = {}
-    for c in rows:
-        if not c["parts"]:
-            continue
+    todo = [c for c in rows if c["parts"]]
+    cache = ST.PdfCache()
+    for i, c in enumerate(todo):
+        if progress:
+            progress(i, len(todo), c["name"])
         rep = rep_of(db, c["rep_name"])
         key = rep["name"] if rep else f"بدون مندوب ({c['rep_name'] or '—'})"
         rep_dir = os.path.join(base, safe_name(key))
@@ -189,13 +191,14 @@ def build_packages(db, folder, cycle):
             aging_pdf = os.path.join(tempfile.mkdtemp(prefix="coll-"), "aging.pdf")
             aging_page(db, folder, c, aging_pdf)
             parts.append((aging_pdf, None))
-        ST.write_pdf(parts, pdf, renumber=True)
+        ST.write_pdf(parts, pdf, renumber=True, cache=cache)
         if aging_pdf:
             shutil.rmtree(os.path.dirname(aging_pdf), ignore_errors=True)
         db.update_cycle_customer(cycle["id"], c["code"], statement=os.path.relpath(pdf, folder.path))
         entry = by_rep.setdefault(key, {"rep": key, "email": rep["email"] if rep else "", "rep_record": rep,
                                         "customers": [], "dir": rep_dir})
         entry["customers"].append(c)
+    cache.close()
     zips_dir = folder.files_dir(month, "zips")
     for f in os.listdir(zips_dir):
         os.remove(os.path.join(zips_dir, f))

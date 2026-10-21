@@ -152,3 +152,27 @@ class ColumnMapDialog(QDialog):
 
     def first_row(self):
         return self.first.value() - 1
+
+
+class Progress:
+    """A progress window for long work (reading a 980-page file, building 200 statements).
+    Call the object with (done, total, text="") from inside the loop."""
+
+    def __init__(self, parent, title):
+        from PySide6.QtWidgets import QProgressDialog
+        self.dlg = QProgressDialog(title, None, 0, 100, parent)
+        self.dlg.setWindowTitle("جاري العمل...")
+        self.dlg.setWindowModality(Qt.WindowModal)
+        self.dlg.setMinimumDuration(400)
+        self.dlg.setMinimumWidth(460)
+        self.title = title
+
+    def __call__(self, done, total, text=""):
+        from PySide6.QtWidgets import QApplication
+        self.dlg.setMaximum(max(total, 1))
+        self.dlg.setValue(done)
+        self.dlg.setLabelText(f"{self.title}\n{done} من {total}" + (f" — {text}" if text else ""))
+        QApplication.processEvents()
+
+    def close(self):
+        self.dlg.close()

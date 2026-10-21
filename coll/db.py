@@ -78,9 +78,9 @@ DEFAULTS = {
     "min_letter": "0",              # no letter when the amount left is below this
     "pay_threshold_legal": "0.7",
     "pay_threshold_action": "0.7",
-    "letter_amount": "remaining",   # remaining overdue | balance
+    "letter_amount": "balance_paid",  # balance_paid | overdue_paid | balance_full | overdue_full
     "workdays": "1",                # stage periods counted in working days
-    "weekend": "4,5",               # Friday, Saturday (Python weekday numbers)
+    "weekend": "4",                 # Friday (Python weekday numbers, comma separated)
     "holidays": "",
     "mail_cc": "",
     "balance_tolerance": "1",
@@ -305,18 +305,33 @@ class DB:
             cid = self.con.execute("INSERT INTO cycles(month, created, aging_file, aging_date) VALUES(?,?,?,?)",
                                    (month, now(), aging_file, aging_date)).lastrowid
             if prev:
-                # customers still inside the letters stages continue from their last letter
-                thr = self.setting_num("pay_threshold")
+                # customers still inside the letters stages continue from their last letter; the paid share is
+                # taken from all of last month's receipts, against the threshold of the stage they wait for
+                paid = self.paid_by_code(prev["id"])
                 for c in self.cycle_customers(prev["id"]):
-                    if c["level"] and not c["excluded"] and (c["pct"] or 0) < thr:
+                    if not c["level"] or c["excluded"]:
+                        continue
+                    base = c["overdue"] or 0
+                    pct = paid.get(c["code"], 0) / base if base > 0.005 else 1.0
+                    key = "pay_threshold_legal" if c["level"] == 1 else "pay_threshold_action"
+                    if pct < self.setting_num(key):
                         keep[c["code"]] = {"level": c["level"], "pn_letter": c["pn_letter"],
                                            "carried": f"مستمر من دورة {prev['month']}"}
         self.con.executemany(
             f"INSERT INTO cycle_customers(cycle_id, {', '.join(CYCLE_FIELDS)}) VALUES({','.join('?' * (len(CYCLE_FIELDS) + 1))})",
             [(cid,) + tuple(r.get(f, "" if f in ("status", "statement", "stmt_detail", "warning") else None)
                             for f in CYCLE_FIELDS) for r in rows])
+        by_code = {r["code"]: r for r in rows}
+        self.carried_forced = []
         for code, old in keep.items():
             fields = {f: old[f] for f in EXTRA_CYCLE_FIELDS if f in old}
+            row = by_code.get(code)
+            # a customer inside the letters stages stays in the cycle even outside the size limits
+            # (minimum overdue, top N, excluded reps...), unless permanently excluded or nothing is overdue
+            if old.get("level") and row and not row.get("required") and (row.get("overdue") or 0) > 0.005 \
+                    and not str(row.get("skip") or "").startswith("استثناء دائم"):
+                fields.update(required=1, status="مطلوب مطابقة")
+                self.carried_forced.append(code)
             if cyc and old.get("status") not in (None, "", "مطلوب مطابقة"):
                 fields["status"] = old["status"]   # same month re-uploaded: keep the follow-up status
             if fields:

@@ -11,6 +11,7 @@ from ..updater import UpdateChecker
 from ..version import BUILD
 from .. import stages
 from .cycle_page import CyclePage
+from .dashboard_page import DashboardPage
 from .follow_page import FollowPage
 from .letters_page import LettersPage
 from .templates_page import TemplatesPage
@@ -55,7 +56,7 @@ class MainWindow(QMainWindow):
         self.cycle_page = CyclePage(self)
         self.customers_page = CustomersPage(self)
         self.follow_page = FollowPage(self)
-        self.pages = [("🔄 الدورة الشهرية (يوم 1)", self.cycle_page),
+        self.pages = [("📊 اللوحة الشهرية", DashboardPage(self)), ("🔄 الدورة الشهرية (يوم 1)", self.cycle_page),
                       ("📨 المتابعة والخطابات", self.follow_page), ("🗂 سجل الخطابات والتفاوض", LettersPage(self)),
                       ("📝 النماذج", TemplatesPage(self)), ("👥 العملاء", self.customers_page),
                       ("🧑‍💼 المناديب", RepsPage(self)), ("📜 سجل العمليات", LogPage(self)),

@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QFormLayout, QGroupBox, QHB
                                QTabWidget, QVBoxLayout,
                                QWidget)
 
-from .. import mailer
+from .. import mailer, stages
 from .widgets import ask, error, info, warn
 
 
@@ -101,8 +101,10 @@ class SettingsPage(QWidget):
         self.min_letter.setSpecialValueText("بدون حد")
         f.addRow("لا يصدر خطاب إذا كان المبلغ المتبقي أقل من:", self.min_letter)
         self.letter_amount = QComboBox()
-        self.letter_amount.addItem("المتأخر المتبقي بعد السداد", "remaining")
-        self.letter_amount.addItem("كامل الرصيد المتبقي بعد السداد", "balance")
+        for key, label in stages.LETTER_AMOUNTS.items():
+            self.letter_amount.addItem(label, key)
+        self.letter_amount.setToolTip("الرصيد والمتأخر من تقرير الأعمار يوم 1، والسداد = سندات القبض المحسوبة حتى "
+                                      "نهاية المرحلة. تقدر تعدل مبلغ أي خطاب يدويًا قبل الإصدار.")
         f.addRow("مبلغ الخطاب:", self.letter_amount)
 
         f = group("المواعيد")
@@ -113,8 +115,17 @@ class SettingsPage(QWidget):
             sp.setRange(1, 60)
             self.days[key] = sp
             f.addRow(label + " (من بداية الدورة):", sp)
-        self.workdays = QCheckBox("حساب الأيام بأيام العمل (بدون الجمعة والسبت والإجازات)")
+        self.workdays = QCheckBox("حساب الأيام بأيام العمل (بدون أيام الإجازة الأسبوعية والإجازات الرسمية)")
         f.addRow(self.workdays)
+        week = QHBoxLayout()
+        self.weekend = {}
+        for num, name in ((6, "الأحد"), (0, "الاثنين"), (1, "الثلاثاء"), (2, "الأربعاء"), (3, "الخميس"),
+                          (4, "الجمعة"), (5, "السبت")):
+            cb = QCheckBox(name)
+            self.weekend[num] = cb
+            week.addWidget(cb)
+        week.addStretch()
+        f.addRow("الإجازة الأسبوعية:", week)
         self.holidays = QPlainTextEdit()
         self.holidays.setPlaceholderText("تاريخ في كل سطر، مثل 23/09/2026")
         self.holidays.setMaximumHeight(90)
@@ -275,6 +286,9 @@ class SettingsPage(QWidget):
         for k, sp in self.days.items():
             sp.setValue(int(db.setting_num(k)))
         self.workdays.setChecked(db.setting("workdays") == "1")
+        off = {x.strip() for x in db.setting("weekend").split(",")}
+        for num, cb in self.weekend.items():
+            cb.setChecked(str(num) in off)
         self.holidays.setPlainText(db.setting("holidays"))
         self.attach_aging.setChecked(db.setting("attach_aging") == "1")
         self.tolerance.setValue(int(db.setting_num("balance_tolerance")))
@@ -301,6 +315,19 @@ class SettingsPage(QWidget):
     def save_rules(self):
         if not self.win.can_edit():
             return
+        days = [self.days[k].value() for k in ("day_statements", "day_finance", "day_legal", "day_action")]
+        if days != sorted(days) or len(set(days[1:])) < 3:
+            warn(self, "ترتيب أيام المراحل غير صحيح: لازم يكون يوم الكشوف ← المالية ← القانونية ← الإجراء، "
+                       "وكل مرحلة بعد التي قبلها.")
+            return
+        if self.workdays.isChecked() and all(cb.isChecked() for cb in self.weekend.values()):
+            warn(self, "اخترت كل أيام الأسبوع إجازة — اترك يوم عمل واحد على الأقل.")
+            return
+        rates = [self.threshold.value(), self.threshold_legal.value(), self.threshold_action.value()]
+        if rates != sorted(rates) and not ask(
+                self, "نسبة السداد في مرحلة أقل من المرحلة التي قبلها — يعني عميل يُعفى من خطاب ثم يُطلب منه الخطاب "
+                      "الأشد. متأكد من الحفظ؟"):
+            return
         db = self.win.db
         db.set_setting("company", self.company.text().strip())
         db.set_setting("custody_days", self.custody.currentData())
@@ -317,6 +344,7 @@ class SettingsPage(QWidget):
         for k, sp in self.days.items():
             db.set_setting(k, sp.value())
         db.set_setting("workdays", "1" if self.workdays.isChecked() else "0")
+        db.set_setting("weekend", ",".join(str(n) for n, cb in self.weekend.items() if cb.isChecked()))
         db.set_setting("holidays", self.holidays.toPlainText().strip())
         db.set_setting("attach_aging", "1" if self.attach_aging.isChecked() else "0")
         db.set_setting("balance_tolerance", self.tolerance.value())
