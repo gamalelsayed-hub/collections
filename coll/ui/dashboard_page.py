@@ -70,7 +70,8 @@ class DashboardPage(QWidget):
         t.setStyleSheet(f"color:{NAVY}; font-weight:700; margin-top:6px;")
         lay.addWidget(t)
         self.table = styled_table(["المندوب", "العملاء", "المتأخر يوم 1", "المسدد", "نسبة التحصيل", "مطابق",
-                                   "غير مطابق", "لم يرجع", "خرجوا", "1003", "1004", "1005/1006", "إيقاف بيع"])
+                                   "غير مطابق", "لم يرجع", "خرجوا", "خطاب مالي", "خطاب قانوني", "إجراء قانوني",
+                                   "إيقاف بيع"])
         self.table.doubleClicked.connect(self._pick_rep)
         lay.addWidget(self.table, 1)
 
