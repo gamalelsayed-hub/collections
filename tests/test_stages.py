@@ -141,6 +141,9 @@ def test_receipts_period(tmp_path):
     # the Day 7 decision is still based on receipts up to the 7th
     stages.recompute_paid(db, cyc, "2026-10-01", "2026-10-07")
     assert db.cycle_customer(cyc["id"], "90000001")["paid"] == 100.0
-    # September aging uploaded in October → the period starts on 1 October
+    # the cycle month is the collection month, whenever the aging report was uploaded
     db.create_cycle("2026-09", "aging.xlsx", "2026-10-20", [])
-    assert stages.cycle_start(db, db.cycle("2026-09")) == "2026-10-01"
+    sep = db.cycle("2026-09")
+    assert stages.cycle_start(db, sep) == "2026-09-01" and stages.stage_end(db, sep, "finance") == "2026-09-07"
+    db.set_cycle_start(sep["id"], "2026-09-03")
+    assert stages.stage_end(db, sep, "finance") == "2026-09-09"

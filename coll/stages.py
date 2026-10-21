@@ -116,14 +116,10 @@ STAGE_DAYS = {"finance": "day_finance", "legal": "day_legal", "action": "day_act
 
 
 def cycle_start(db, cycle):
-    """Day 1 of the collection period. Saved per cycle; by default the 1st of the month after the aging month when
-    the aging report was uploaded after that month (e.g. September aging uploaded in October → 1 October)."""
+    """Day 1 of the collection period: the 1st of the cycle month (September cycle → September receipts),
+    unless changed for this cycle."""
     cyc = db.cycle(cycle["month"])
-    if cyc.get("start_date"):
-        return cyc["start_date"]
-    y, m = int(cycle["month"][:4]), int(cycle["month"][5:7])
-    nxt = f"{y + (m == 12):04d}-{m % 12 + 1:02d}-01"
-    return nxt if (cyc.get("aging_date") or "") >= nxt else f"{cycle['month']}-01"
+    return cyc.get("start_date") or f"{cycle['month']}-01"
 
 
 def stage_end(db, cycle, stage):
