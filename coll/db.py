@@ -68,6 +68,7 @@ DEFAULTS = {
     "credit_days": "60",
     "pay_threshold": "0.7",
     "min_overdue": "500",
+    "max_customers": "0",
     "day_statements": "1",
     "day_finance": "7",
     "day_legal": "14",

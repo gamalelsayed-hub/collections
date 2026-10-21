@@ -98,7 +98,7 @@ def read_rows(rows, first, mapping):
     return out
 
 
-def group_customers(rows, custody_days, credit_days, min_overdue=0.005):
+def group_customers(rows, custody_days, credit_days, min_overdue=0.005, max_customers=0):
     """One record per customer code: totals, overdue, types and the responsible rep."""
     groups = {}
     for r in rows:
@@ -130,6 +130,10 @@ def group_customers(rows, custody_days, credit_days, min_overdue=0.005):
             rec[f] = main[f]
         out.append(rec)
     out.sort(key=lambda r: -r["overdue"])
+    if max_customers:
+        # only the N largest overdue customers this month
+        for r in [r for r in out if r["required"]][int(max_customers):]:
+            r["required"], r["status"] = 0, ""
     return out
 
 

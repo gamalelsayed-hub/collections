@@ -29,6 +29,9 @@ def test_group_and_required():
     # minimum overdue: 90000003 (50) and 90000004 (370) drop out above 400
     g = {r["code"]: r for r in aging.group_customers(recs, 30, 60, 400)}
     assert g["90000001"]["required"] and not g["90000003"]["required"] and not g["90000004"]["required"]
+    # only the 2 largest overdue customers
+    g = aging.group_customers(recs, 30, 60, 0, 2)
+    assert [r["code"] for r in g if r["required"]] == ["90000001", "90000004"]
     # stricter credit rule
     g = {r["code"]: r for r in aging.group_customers(recs, 30, 30)}
     assert g["90000002"]["required"]

@@ -61,6 +61,12 @@ class SettingsPage(QWidget):
         self.min_overdue.setSuffix(" ريال")
         self.min_overdue.setToolTip("العميل الذي متأخره أقل من هذا المبلغ لا يدخل دورة المطابقة ولا تصدر له خطابات")
         f.addRow("أقل مبلغ متأخر للمطابقة (أكثر من):", self.min_overdue)
+        self.max_customers = QSpinBox()
+        self.max_customers.setRange(0, 100_000)
+        self.max_customers.setSingleStep(10)
+        self.max_customers.setSpecialValueText("بدون حد — كل العملاء المتأخرين")
+        self.max_customers.setToolTip("مطابقة أكبر عدد من العملاء المتأخرين فقط هذا الشهر، بالترتيب من الأكبر متأخرًا")
+        f.addRow("عدد العملاء في الدورة (الأكبر متأخرًا):", self.max_customers)
         self.days = {}
         for key, label in (("day_statements", "يوم تجهيز الكشوف"), ("day_finance", "يوم خطاب الإدارة المالية"),
                            ("day_legal", "يوم خطاب الإدارة القانونية"), ("day_action", "يوم الإجراء القانوني")):
@@ -169,6 +175,7 @@ class SettingsPage(QWidget):
         self.credit.setCurrentIndex(max(0, self.credit.findData(int(db.setting_num("credit_days")))))
         self.threshold.setValue(int(round(db.setting_num("pay_threshold") * 100)))
         self.min_overdue.setValue(int(db.setting_num("min_overdue")))
+        self.max_customers.setValue(int(db.setting_num("max_customers")))
         for k, sp in self.days.items():
             sp.setValue(int(db.setting_num(k)))
         s = QSettings()
@@ -198,6 +205,7 @@ class SettingsPage(QWidget):
         db.set_setting("credit_days", self.credit.currentData())
         db.set_setting("pay_threshold", self.threshold.value() / 100)
         db.set_setting("min_overdue", self.min_overdue.value())
+        db.set_setting("max_customers", self.max_customers.value())
         for k, sp in self.days.items():
             db.set_setting(k, sp.value())
         db.log("تعديل الإعدادات")
