@@ -54,6 +54,13 @@ class SettingsPage(QWidget):
         self.threshold.setRange(1, 100)
         self.threshold.setSuffix(" %")
         f.addRow("نسبة السداد التي تعفي من الإجراء:", self.threshold)
+        self.min_overdue = QSpinBox()
+        self.min_overdue.setRange(0, 10_000_000)
+        self.min_overdue.setSingleStep(100)
+        self.min_overdue.setGroupSeparatorShown(True)
+        self.min_overdue.setSuffix(" ريال")
+        self.min_overdue.setToolTip("العميل الذي متأخره أقل من هذا المبلغ لا يدخل دورة المطابقة ولا تصدر له خطابات")
+        f.addRow("أقل مبلغ متأخر للمطابقة (أكثر من):", self.min_overdue)
         self.days = {}
         for key, label in (("day_statements", "يوم تجهيز الكشوف"), ("day_finance", "يوم خطاب الإدارة المالية"),
                            ("day_legal", "يوم خطاب الإدارة القانونية"), ("day_action", "يوم الإجراء القانوني")):
@@ -161,6 +168,7 @@ class SettingsPage(QWidget):
         self.custody.setCurrentIndex(max(0, self.custody.findData(int(db.setting_num("custody_days")))))
         self.credit.setCurrentIndex(max(0, self.credit.findData(int(db.setting_num("credit_days")))))
         self.threshold.setValue(int(round(db.setting_num("pay_threshold") * 100)))
+        self.min_overdue.setValue(int(db.setting_num("min_overdue")))
         for k, sp in self.days.items():
             sp.setValue(int(db.setting_num(k)))
         s = QSettings()
@@ -189,6 +197,7 @@ class SettingsPage(QWidget):
         db.set_setting("custody_days", self.custody.currentData())
         db.set_setting("credit_days", self.credit.currentData())
         db.set_setting("pay_threshold", self.threshold.value() / 100)
+        db.set_setting("min_overdue", self.min_overdue.value())
         for k, sp in self.days.items():
             db.set_setting(k, sp.value())
         db.log("تعديل الإعدادات")

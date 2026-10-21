@@ -98,7 +98,7 @@ def read_rows(rows, first, mapping):
     return out
 
 
-def group_customers(rows, custody_days, credit_days):
+def group_customers(rows, custody_days, credit_days, min_overdue=0.005):
     """One record per customer code: totals, overdue, types and the responsible rep."""
     groups = {}
     for r in rows:
@@ -124,7 +124,7 @@ def group_customers(rows, custody_days, credit_days):
         reps = sorted({x["rep_name"] for x in rs if x["rep_name"]})
         if len(reps) > 1:
             rec["warning"] = f"العميل مسجل على أكثر من مندوب: {'، '.join(reps)}"
-        rec["required"] = 1 if rec["overdue"] > 0.005 else 0
+        rec["required"] = 1 if rec["overdue"] > max(min_overdue, 0.005) else 0   # small overdue amounts are skipped
         rec["status"] = "مطلوب مطابقة" if rec["required"] else ""
         for f in ("region", "branch", "cls", "ctype"):
             rec[f] = main[f]

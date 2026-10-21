@@ -237,7 +237,8 @@ class CyclePage(QWidget):
         if db.cycle(month) and not ask(self, f"دورة {month_label(month)} موجودة. استبدال تقرير الأعمار؟ "
                                              "(الكشوف المرفوعة تبقى)"):
             return
-        grouped = aging.group_customers(recs, db.setting_num("custody_days"), db.setting_num("credit_days"))
+        grouped = aging.group_customers(recs, db.setting_num("custody_days"), db.setting_num("credit_days"),
+                                        db.setting_num("min_overdue"))
         new, moved = db.upsert_from_aging(recs)
         db.create_cycle(month, os.path.basename(path), date.today().isoformat(), grouped)
         req = [g for g in grouped if g["required"]]
@@ -253,8 +254,12 @@ class CyclePage(QWidget):
                     auto.append(f"{a} ← {r['name']}")
         db.commit()
         unmapped = [a for a in aging.rep_names(recs) if not db.rep_for(a)]
+        small = [g for g in grouped if not g["required"] and g["overdue"] > 0.005]
         msg = [f"دورة {month_label(month)}: {len(grouped)} عميل، منهم {len(req)} مطلوب مطابقة بمتأخر "
                f"{money(sum(r['overdue'] for r in req))}."]
+        if small:
+            msg.append(f"• {len(small)} عميل متأخره أقل من {db.setting_num('min_overdue'):,.0f} ريال لم يدخل الدورة "
+                       "(تقدر تغير الحد من الإعدادات).")
         if new:
             msg.append(f"• {len(new)} عميل جديد أضيف لقائمة العملاء.")
         if moved:

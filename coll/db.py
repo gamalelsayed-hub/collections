@@ -67,6 +67,7 @@ DEFAULTS = {
     "custody_days": "30",
     "credit_days": "60",
     "pay_threshold": "0.7",
+    "min_overdue": "500",
     "day_statements": "1",
     "day_finance": "7",
     "day_legal": "14",
