@@ -56,7 +56,7 @@ class DashboardPage(QWidget):
         grid = QGridLayout()
         specs = [("customers", "العملاء المطلوب مطابقتهم"), ("overdue", "المتأخر يوم 1"),
                  ("paid", "المسدد خلال الدورة", "#067647"), ("statements", "الكشوف"),
-                 ("matched", "المطابقات", "#067647"), ("exited", "خرجوا من الدورة", "#067647"),
+                 ("matched", "المطابقات", "#067647"), ("exited", "سددوا وخرجوا من الدورة", "#067647"),
                  ("letters", "الخطابات المصدرة", "#b54708"), ("stop_sale", "إيقاف بيع", "#b42318"),
                  ("other", "تفاوض / استبعاد", "#6941c6")]
         self.cards = {}
@@ -70,8 +70,13 @@ class DashboardPage(QWidget):
         t.setStyleSheet(f"color:{NAVY}; font-weight:700; margin-top:6px;")
         lay.addWidget(t)
         self.table = styled_table(["المندوب", "العملاء", "المتأخر يوم 1", "المسدد", "نسبة التحصيل", "مطابق",
-                                   "غير مطابق", "لم يرجع", "خرجوا", "خطاب مالي", "خطاب قانوني", "إجراء قانوني",
-                                   "إيقاف بيع"])
+                                   "غير مطابق", "الكشف لم يرجع", "سددوا وخرجوا من الدورة", "خطاب مالي",
+                                   "خطاب قانوني", "إجراء قانوني", "إيقاف بيع"])
+        tips = {5: "رجع كشفه موقعًا ومطابقًا", 6: "رجع كشفه وعليه اعتراض", 7: "لم يرجع الكشف الموقع من المندوب بعد",
+                8: "سدد نسبة الإعفاء من المتأخر (70% افتراضيًا) فخرج من الدورة ولا تصدر له خطابات",
+                12: "عليه خطاب قانوني ولم يسدد النسبة — لا يُباع له"}
+        for col, tip in tips.items():
+            self.table.horizontalHeaderItem(col).setToolTip(tip)
         self.table.doubleClicked.connect(self._pick_rep)
         lay.addWidget(self.table, 1)
 
@@ -115,7 +120,7 @@ class DashboardPage(QWidget):
         self.cards["paid"].set(money(s["paid"]), f"{s['pct'] * 100:.0f}% من المتأخر")
         self.cards["statements"].set(f"{s['statements']}", f"أرسل {s['sent']} — ناقص {s['missing']}")
         self.cards["matched"].set(f"{s['matched']}", f"{s['matched'] / n * 100:.0f}% — غير مطابق {s['not_matched']} — "
-                                                     f"لم يرجع {s['not_returned']}")
+                                                     f"الكشف لم يرجع {s['not_returned']}")
         self.cards["exited"].set(f"{s['exited']}", f"{s['exited'] / n * 100:.0f}% من العملاء")
         self.cards["letters"].set(f"{s['1003'] + s['1004'] + s['1005/1006']}",
                                   f"مالي {s['1003']} — قانوني {s['1004']} — إجراء {s['1005/1006']}"
