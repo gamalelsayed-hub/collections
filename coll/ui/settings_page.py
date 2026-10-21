@@ -210,7 +210,7 @@ class SettingsPage(QWidget):
         self.body = QPlainTextEdit()
         self.body.setMinimumHeight(140)
         self.cc = QLineEdit()
-        self.cc.setPlaceholderText("اختياري — مثل manager@altameer.sa (أكثر من إيميل: افصل بفاصلة)")
+        self.cc.setPlaceholderText("اختياري — مثل manager@company.com (أكثر من إيميل: افصل بفاصلة)")
         f2.addRow("نسخة لكل إيميل (CC):", self.cc)
         f2.addRow("الموضوع:", self.subject)
         f2.addRow("النص:", self.body)

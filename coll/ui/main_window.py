@@ -26,7 +26,7 @@ class MainWindow(QMainWindow):
         self.folder, self.db, self.user, self.readonly = folder, db, user, readonly
         self.resize(1400, 860)
         version = f"نسخة {BUILD}" if BUILD else "نسخة تطوير"
-        self.setWindowTitle(f"برنامج المطابقة والتحصيل — {db.setting('company')}   [{user}]   [{version}]"
+        self.setWindowTitle(f"برنامج المطابقة والتحصيل — {db.setting('company') or 'بدون اسم شركة'}   [{user}]   [{version}]"
                             + ("   — للاطلاع فقط" if readonly else ""))
         tb = QToolBar()
         tb.setMovable(False)
@@ -105,6 +105,8 @@ class MainWindow(QMainWindow):
         today = date.today()
         month = f"{today.year:04d}-{today.month:02d}"
         parts = []
+        if not self.db.setting("company").strip():
+            parts.append("🏢 اكتب اسم الشركة والسجل التجاري من «النماذج» حتى يظهرا في الخطابات")
         cycles = self.db.cycles()
         if not self.db.cycle(month) and (not cycles or cycles[0]["month"] < month):
             parts.append(f"⏰ دورة {month_label(month)} لم تبدأ — ارفع تقرير الأعمار")

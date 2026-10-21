@@ -65,7 +65,7 @@ MIGRATIONS = [
 EXTRA_CYCLE_FIELDS = ["matched", "signed", "paid", "pct", "excluded", "exclude_reason", "level", "pn_letter", "carried"]
 
 DEFAULTS = {
-    "company": "شركة أدوات التعمير التجارية",
+    "company": "",                 # اسم الشركة — يُكتب من شاشة «النماذج»
     "custody_days": "30",
     "credit_days": "60",
     "pay_threshold": "0.7",
@@ -90,7 +90,7 @@ DEFAULTS = {
     "day_legal": "14",
     "day_action": "21",
     "require_password": "0",
-    "company_cr": "4030093636",
+    "company_cr": "",
     "contact_mobile": "",
     "contact_email": "",
     "letter_footer": "",
