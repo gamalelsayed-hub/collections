@@ -70,7 +70,7 @@ def test_full_flow(tmp_path, qapp):
     assert letter["serial"] == "RE-SL-26-1003-0001"
     assert db.cycle_customer(cyc["id"], "90000003")["status"] == "خطاب مالي"
 
-    # legal stage: customer has a promissory note → PN version, then the action stage is 1005
+    # legal stage: customer has a promissory note → PN version, then the final direction form
     cust = db.customer("90000003")
     cust.update(has_pn=1, pn_no="PN-1", pn_value=1000.0)
     db.save_customer(cust)
@@ -79,7 +79,7 @@ def test_full_flow(tmp_path, qapp):
     stages.issue(db, folder, cyc, [{"code": "90000003", "kind": "1004PN", "amount": 40.0}], "2026-10-14")
     assert [c["code"] for c in stages.stop_sale(db, cyc)] == ["90000003"]
     action = stages.candidates(db, cyc, "action")
-    assert action[0]["kind"] == "1005"
+    assert action[0]["kind"] == "FD"
     legal_serial = db.letters(code="90000003")[0]["serial"]
     assert legal_serial == "RE-SL-26-1004-0001"
 
@@ -147,3 +147,24 @@ def test_receipts_period(tmp_path):
     assert stages.cycle_start(db, sep) == "2026-09-01" and stages.stage_end(db, sep, "finance") == "2026-09-07"
     db.set_cycle_start(sep["id"], "2026-09-03")
     assert stages.stage_end(db, sep, "finance") == "2026-09-09"
+
+
+def test_final_direction_form(tmp_path, qapp):
+    folder, db, cyc = setup_cycle(tmp_path)
+    cust = db.customer("90000003")
+    cust.update(has_pn=1, pn_no="PN-7", pn_value=900.0)
+    db.save_customer(cust)
+    db.update_cycle_customer(cyc["id"], "90000003", statement="files/x.pdf", stmt_balance=150.0, matched=1)
+    stages.issue(db, folder, cyc, [{"code": "90000003", "kind": "1003", "amount": 150.0}], "2026-10-07")
+    stages.issue(db, folder, cyc, [{"code": "90000003", "kind": "1004PN", "amount": 150.0}], "2026-10-14")
+    c = db.cycle_customer(cyc["id"], "90000003")
+    v = stages.final_direction_values(db, c, db.customer("90000003"))
+    assert (v["مرفق_كشف"], v["مطابقة"], v["خطاب_المالية"], v["خطاب_سند"], v["خطاب_دعوى"], v["عنده_سند"]) == \
+        ("☑", "☑", "☑", "☑", "☐", "☑")
+    assert v["ملاحظة_المالية"].startswith("RE-SL-26-1003-0001") and "PN-7" in v["ملاحظة_سند"]
+    assert v["ملاحظة_مطابقة"] == "تأكيد المحاسب"
+    cand = stages.candidates(db, cyc, "action")
+    assert cand[0]["kind"] == "FD"
+    packs = stages.issue(db, folder, cyc, [{"code": "90000003", "kind": "FD", "amount": 150.0}], "2026-10-21")
+    assert db.letters(code="90000003")[0]["serial"] == "RE-SL-26-FD-0001" and os.path.exists(packs[0]["letters"][0]["pdf"])
+    assert db.cycle_customer(cyc["id"], "90000003")["status"] == "توجيه نهائي — بانتظار قرار المدير"

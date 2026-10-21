@@ -96,7 +96,7 @@ class SettingsPage(QWidget):
         self.threshold_action = pct_box()
         f.addRow("نسبة السداد التي تعفي من خطاب الإدارة المالية:", self.threshold)
         f.addRow("نسبة السداد التي توقف الخطاب القانوني:", self.threshold_legal)
-        f.addRow("نسبة السداد التي توقف الإجراء القانوني:", self.threshold_action)
+        f.addRow("نسبة السداد التي توقف التوجيه النهائي:", self.threshold_action)
         self.min_letter = money_box()
         self.min_letter.setSpecialValueText("بدون حد")
         f.addRow("لا يصدر خطاب إذا كان المبلغ المتبقي أقل من:", self.min_letter)
@@ -110,7 +110,7 @@ class SettingsPage(QWidget):
         f = group("المواعيد")
         self.days = {}
         for key, label in (("day_statements", "يوم تجهيز الكشوف"), ("day_finance", "يوم خطاب الإدارة المالية"),
-                           ("day_legal", "يوم خطاب الإدارة القانونية"), ("day_action", "يوم الإجراء القانوني")):
+                           ("day_legal", "يوم خطاب الإدارة القانونية"), ("day_action", "يوم التوجيه النهائي")):
             sp = QSpinBox()
             sp.setRange(1, 60)
             self.days[key] = sp

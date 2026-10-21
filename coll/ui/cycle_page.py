@@ -16,7 +16,7 @@ from .widgets import (NAVY, STATUS_COLORS, ColumnMapDialog, MonthDialog, Progres
 STAGES = [("day_statements", "يوم 1", "تجهيز الكشوف وإرسالها للمناديب"),
           ("day_finance", "يوم 7", "المطابقات + سندات القبض ← خطاب الإدارة المالية"),
           ("day_legal", "يوم 14/15", "سندات القبض ← خطاب الإدارة القانونية وإيقاف البيع"),
-          ("day_action", "يوم 21/22", "سندات القبض ← رفع السند لأمر أو دعوى قضائية")]
+          ("day_action", "يوم 21/22", "سندات القبض ← التوجيه النهائي (قرار المدير)")]
 
 
 def step_box(title):

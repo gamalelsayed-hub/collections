@@ -4,7 +4,7 @@ Payment rule: paid (cumulative receipts uploaded for the cycle) ÷ overdue at Da
 threshold (70% by default) leaves the cycle. The others get the next letter:
   level 0 → 1003 finance letter
   level 1 → 1004 legal letter (PN version if the customer has a promissory note) + stop-sale alert
-  level 2 → 1005 PN to execution (if the legal letter was the PN version) or 1006 lawsuit warning
+  level 2 → FD final direction form (internal: the manager decides the action on the customer)
 """
 import os
 import re
@@ -18,11 +18,12 @@ from .day1 import safe_name
 STAGES = {
     "finance": (1, "خطاب الإدارة المالية"),
     "legal": (2, "خطاب الإدارة القانونية"),
-    "action": (3, "الإجراء القانوني"),
+    "action": (3, "التوجيه النهائي (اتخاذ إجراءات)"),
 }
-LEVEL_OF_KIND = {"1003": 1, "1004": 2, "1004PN": 2, "1005": 3, "1006": 3}
+LEVEL_OF_KIND = {"1003": 1, "1004": 2, "1004PN": 2, "FD": 3, "1005": 3, "1006": 3}   # 1005/1006: old letters
 KIND_NAMES = {"1003": "خطاب مالي", "1004": "خطاب قانوني", "1004PN": "خطاب قانوني (سند لأمر)",
-              "1005": "إحالة السند للتنفيذ", "1006": "إنذار دعوى", "1002": "اتفاقية تسوية"}
+              "FD": "التوجيه النهائي", "1005": "إحالة السند للتنفيذ", "1006": "إنذار دعوى",
+              "1002": "اتفاقية تسوية"}
 DAY1_STATUSES = ("", "مطلوب مطابقة", "كشف ناقص", "كشف جاهز", "اترسل كشف")
 
 
@@ -55,7 +56,7 @@ def derive_status(c, thr, negotiating):
         return f"سدد {c['pct'] * 100:.0f}%"
     level = c.get("level") or 0
     if level == 3:
-        return "إحالة السند للتنفيذ" if c.get("pn_letter") else "إنذار دعوى"
+        return "توجيه نهائي — بانتظار قرار المدير"
     if level == 2:
         return "خطاب قانوني — إيقاف بيع"
     if level == 1:
@@ -270,12 +271,10 @@ def candidates(db, cycle, stage):
         elif stage == "legal":
             kind = "1004PN" if m.get("has_pn") else "1004"
         else:
-            kind = "1005" if c["pn_letter"] else "1006"
+            kind = "FD"
         row = dict(c)
         row.update(eligible=eligible, reason="، ".join(reasons), kind=kind, amount=amount,
                    cr_no=m.get("cr_no", ""), has_pn=m.get("has_pn"), pn_no=m.get("pn_no", ""))
-        if kind == "1005" and not m.get("pn_no"):
-            row["reason"] += "، ⚠ رقم السند لأمر غير مسجل في بيانات العميل"
         out.append(row)
     out.sort(key=lambda r: (not r["eligible"], -(r["amount"] or 0)))
     return out
@@ -287,6 +286,40 @@ def letterhead(db, folder):
 
 def images(folder):
     return {"الختم": folder.asset("stamp.png"), "التوقيع": folder.asset("signature.png")}
+
+
+CHECKED, EMPTY = "☑", "☐"
+
+
+def final_direction_values(db, c, cust):
+    """Boxes and notes of the final direction form, from what is recorded for the customer."""
+    from .letters import fmt_date, money
+    letters = [l for l in db.letters(code=c["code"]) if l["status"] != "ملغي"]
+
+    def last(*kinds):
+        found = [l for l in letters if l["kind"] in kinds]
+        return found[0] if found else None      # letters() is newest first
+
+    def letter_box(*kinds):
+        l = last(*kinds)
+        return (CHECKED, f"{l['serial']} — {fmt_date(l['date'])}") if l else (EMPTY, "")
+    v = {}
+    v["مرفق_كشف"], v["ملاحظة_كشف"] = ((CHECKED, f"رصيد الكشف {money(c['stmt_balance'])}" if c["stmt_balance"]
+                                     is not None else "") if c.get("statement") else (EMPTY, ""))
+    if c.get("matched") == 1:
+        v["مطابقة"], v["ملاحظة_مطابقة"] = CHECKED, "كشف موقع من العميل" if c.get("signed") else "تأكيد المحاسب"
+    else:
+        v["مطابقة"], v["ملاحظة_مطابقة"] = EMPTY, ("غير مطابق" if c.get("matched") == 0 else "لم يرجع الكشف")
+    v["خطاب_المالية"], v["ملاحظة_المالية"] = letter_box("1003")
+    v["خطاب_سند"], v["ملاحظة_خطاب_سند"] = letter_box("1004PN")
+    v["خطاب_دعوى"], v["ملاحظة_خطاب_دعوى"] = letter_box("1004")
+    if cust.get("has_pn"):
+        note = " — ".join(x for x in (f"رقم {cust['pn_no']}" if cust.get("pn_no") else "",
+                                      f"قيمة {money(cust['pn_value'])}" if cust.get("pn_value") else "") if x)
+        v["عنده_سند"], v["ملاحظة_سند"] = CHECKED, note
+    else:
+        v["عنده_سند"], v["ملاحظة_سند"] = EMPTY, ""
+    return v
 
 
 def render_letter(db, folder, kind, cust, amount, serial, date_iso, prev, out_path, extra=None):
@@ -318,7 +351,8 @@ def issue(db, folder, cycle, items, date_iso=None, stage=None, progress=None):
         out_dir = os.path.join(base, f"{kind[:4]} {KIND_NAMES[kind]}", safe_name(key))
         pdf = os.path.join(out_dir, f"{c['code']} - {safe_name(c['name'])} - {safe_name(serial)}.pdf")
         try:
-            render_letter(db, folder, kind, cust, it["amount"], serial, date_iso, prev, pdf)
+            extra = final_direction_values(db, c, cust) if kind == "FD" else None
+            render_letter(db, folder, kind, cust, it["amount"], serial, date_iso, prev, pdf, extra)
             db.add_letter(serial, kind, c["code"], cycle["id"], date_iso, it["amount"],
                           os.path.relpath(pdf, folder.path), prev["serial"] if prev else "", c["rep_name"])
             fields = {"level": LEVEL_OF_KIND[kind]}
