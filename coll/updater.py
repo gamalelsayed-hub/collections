@@ -13,10 +13,10 @@ import urllib.request
 
 from PySide6.QtCore import QObject, Signal
 
-from .version import BUILD, REPO
+from .version import BUILD, RELEASES_REPO, REPO
 
-API = f"https://api.github.com/repos/{REPO}/releases/latest"
-RELEASES_PAGE = f"https://github.com/{REPO}/releases/latest"
+API = "https://api.github.com/repos/{}/releases/latest"
+RELEASES_PAGE = f"https://github.com/{RELEASES_REPO}/releases/latest"
 
 
 def parse_release(data):
@@ -47,9 +47,9 @@ def ssl_contexts():
     return out
 
 
-def fetch_latest(timeout=10):
-    req = urllib.request.Request(API, headers={"Accept": "application/vnd.github+json",
-                                               "User-Agent": "Collections"})
+def fetch_release(repo, timeout=10):
+    req = urllib.request.Request(API.format(repo), headers={"Accept": "application/vnd.github+json",
+                                                         "User-Agent": "Collections"})
     last = None
     for ctx in ssl_contexts():
         try:
@@ -60,6 +60,25 @@ def fetch_latest(timeout=10):
                 raise
             last = e
     raise last
+
+
+def fetch_latest(timeout=10):
+    """The newest release of the downloads repository and the code repository (the code repository may be
+    private or gone; while moving to the downloads repository both may have releases)."""
+    found, errors = [], []
+    for repo in (RELEASES_REPO, REPO):
+        try:
+            data = fetch_release(repo, timeout)
+        except urllib.error.HTTPError as e:
+            errors.append(e)
+            continue
+        if parse_release(data):
+            found.append(data)
+    if not found:
+        if errors:
+            raise errors[0]
+        return {}
+    return max(found, key=lambda d: parse_release(d)[0])
 
 
 class UpdateChecker(QObject):

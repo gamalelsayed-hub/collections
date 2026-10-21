@@ -10,6 +10,9 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      # access key to the public downloads repository (repository secret); without it only this repo gets the release
+      RELEASES_TOKEN: ${{ secrets.RELEASES_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -45,3 +48,11 @@ jobs:
           git log -1 --pretty=%B | Out-File -Encoding utf8 notes.txt
           gh release create "build-${{ github.run_number }}" installer/Output/Collections-Setup.exe Collections-windows.zip `
             --title "نسخة رقم ${{ github.run_number }}" --notes-file notes.txt --target "${{ github.sha }}"
+      - name: Publish to downloads repository
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push' && env.RELEASES_TOKEN != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ env.RELEASES_TOKEN }}
+        run: |
+          gh release create "build-${{ github.run_number }}" installer/Output/Collections-Setup.exe Collections-windows.zip `
+            -R gamalelsayed-hub/collections-releases --title "نسخة رقم ${{ github.run_number }}" --notes-file notes.txt
