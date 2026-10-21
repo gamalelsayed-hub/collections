@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDate
 
 from .. import mailer, receipts, stages
 from .cycle_page import step_box
+from .mail_preview import MailPreviewDialog
 from .widgets import (NAVY, ColumnMapDialog, ask, color_item, error, info, money, month_label, ro, styled_table,
                       warn)
 
@@ -281,7 +282,7 @@ class FollowPage(QWidget):
                     r["kind"] = k
                     r["reason"] = (r["reason"] + "، نوع الخطاب مختار يدويًا").strip("، ")
         else:
-            thr = stages.threshold(db)
+            thr = stages.threshold(db, key)
             self.rows = []
             masters = db.customers()
             for c in db.cycle_customers(self.cycle["id"], required_only=True):
@@ -309,7 +310,7 @@ class FollowPage(QWidget):
         lvl, name = stages.STAGES[key]
         self.letter_info.setText(
             f"{name}: {len(eligible)} عميل مرشح بمبلغ {money(sum(r['amount'] for r in eligible))}. "
-            f"نسبة الخروج من الدورة: {stages.threshold(db) * 100:.0f}% من المتأخر يوم 1." if self.view.currentIndex() == 0
+            f"نسبة الإعفاء في هذه المرحلة: {stages.threshold(db, key) * 100:.0f}% من المتأخر يوم 1." if self.view.currentIndex() == 0
             else "عرض كل العملاء — اختر «المرشحون» لإصدار الخطابات.")
         self.fill()
 
@@ -345,7 +346,7 @@ class FollowPage(QWidget):
             t.setItem(i, 4, ro(money(r["overdue"]), True))
             t.setItem(i, 5, ro(money(r["paid"] or 0), True))
             it = ro(pct_text(r["pct"]), True)
-            color_item(it, "#067647" if (r["pct"] or 0) >= stages.threshold(self.win.db) else "#b42318")
+            color_item(it, "#067647" if (r["pct"] or 0) >= stages.threshold(self.win.db, self.stage_key()) else "#b42318")
             t.setItem(i, 6, it)
             t.setItem(i, 7, ro({1: "✔ مطابق", 0: "✖ غير مطابق"}.get(r["matched"], "—")))
             it = ro(r["status"])
@@ -411,7 +412,8 @@ class FollowPage(QWidget):
         if r["excluded"]:
             acts.append(("↩ إلغاء الاستبعاد", lambda: self._include(r)))
         else:
-            acts.append(("🚫 استبعاد من الإجراءات (مع سبب)", lambda: self._exclude(r)))
+            acts.append(("🚫 استبعاد من الإجراءات هذه الدورة (مع سبب)", lambda: self._exclude(r)))
+            acts.append(("⛔ استثناء دائم (لا يدخل أي دورة)", lambda: self._exclude(r, permanent=True)))
         if self.view.currentIndex() == 0 and r["kind"] in SWITCH:
             other = SWITCH[r["kind"]]
             acts.append((f"🔁 تغيير نوع الخطاب إلى: {stages.KIND_NAMES[other]} ({other[:4]})",
@@ -440,12 +442,19 @@ class FollowPage(QWidget):
             stages.attach_signed_to(self.win.db, self.win.folder, self.cycle, r["code"], path)
             self.refresh()
 
-    def _exclude(self, r):
+    def _exclude(self, r, permanent=False):
         if not self.win.can_edit():
             return
-        reason, ok = QInputDialog.getText(self, "استبعاد من الإجراءات", f"سبب استبعاد {r['name']}:")
+        title = "استثناء دائم" if permanent else "استبعاد من الإجراءات"
+        reason, ok = QInputDialog.getText(self, title, f"سبب {title} — {r['name']}:")
         if ok and reason.strip():
-            stages.exclude(self.win.db, self.cycle, r["code"], reason.strip())
+            if permanent:
+                db = self.win.db
+                c = db.customer(r["code"])
+                c.update(perm_exclude=1, perm_reason=reason.strip())
+                db.save_customer(c)
+                db.log("استثناء دائم", reason.strip(), code=r["code"])
+            stages.exclude(self.win.db, self.cycle, r["code"], ("استثناء دائم: " if permanent else "") + reason.strip())
             self.refresh()
         elif ok:
             warn(self, "لازم تكتب السبب.")
@@ -646,19 +655,19 @@ class FollowPage(QWidget):
         if not cfg:
             warn(self, "اضبط إعدادات الإيميل أولًا من شاشة الإعدادات، أو أرسل الملفات يدويًا من فولدر الخطابات.")
             return
-        sendable = [p for p in self.packages if p["email"]]
-        if not sendable:
-            warn(self, "لا يوجد مندوب له إيميل في هذا الإصدار.")
-            return
-        names = "\n".join(f"• {p['rep']} ← {p['email']} ({len(p['letters'])} خطاب)" for p in sendable)
-        if not ask(self, f"إرسال الخطابات:\n{names}"):
-            return
         month = month_label(self.cycle["month"])
         stage = self.stage.currentText()
-        msgs = [(p["email"], f"{stage} — عملاء {p['rep']} — {month}",
-                 f"الأستاذ/ {p['rep']} المحترم،\n\nمرفق {stage} لعملائك ({len(p['letters'])} عميل) لشهر {month}.\n"
-                 "نرجو تسليمها للعملاء ومتابعة السداد.\n\nمع الشكر،\nالإدارة المالية — قسم التحصيل والائتمان",
-                 [p["zip"]]) for p in sendable]
+        mails = [{"rep": p["rep"], "to": p["email"], "subject": f"{stage} — عملاء {p['rep']} — {month}",
+                  "body": (f"الأستاذ/ {p['rep']} المحترم،\n\nمرفق {stage} لعملائك ({len(p['letters'])} عميل) لشهر "
+                           f"{month}.\nنرجو تسليمها للعملاء ومتابعة السداد.\n\nمع الشكر،\n"
+                           "الإدارة المالية — قسم التحصيل والائتمان"),
+                  "files": [p["zip"]], "count": f"{len(p['letters'])} خطاب"} for p in self.packages]
+        dlg = MailPreviewDialog(self, mails, cfg.get("cc", ""), "مراجعة إيميلات الخطابات قبل الإرسال")
+        if dlg.exec() != QDialog.Accepted:
+            return
+        msgs = [(m["to"], m["subject"], m["body"], m["files"]) for m in dlg.selected()]
+        if not msgs:
+            return
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             results = mailer.send_all(cfg, msgs)

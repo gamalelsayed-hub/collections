@@ -26,8 +26,17 @@ KIND_NAMES = {"1003": "خطاب مالي", "1004": "خطاب قانوني", "100
 DAY1_STATUSES = ("", "مطلوب مطابقة", "كشف ناقص", "كشف جاهز", "اترسل كشف")
 
 
-def threshold(db):
-    return db.setting_num("pay_threshold")
+THRESHOLD_KEYS = {"finance": "pay_threshold", "legal": "pay_threshold_legal", "action": "pay_threshold_action"}
+NEXT_STAGE = {0: "finance", 1: "legal", 2: "action", 3: "action"}
+
+
+def threshold(db, stage="finance"):
+    """Paid share of the Day 1 overdue that stops the letter of this stage."""
+    return db.setting_num(THRESHOLD_KEYS[stage or "finance"])
+
+
+def thresholds_by_level(db):
+    return {lvl: threshold(db, st) for lvl, st in NEXT_STAGE.items()}
 
 
 def negotiating_codes(db):
@@ -35,6 +44,9 @@ def negotiating_codes(db):
 
 
 def derive_status(c, thr, negotiating):
+    """thr: one threshold, or {level: threshold} for the stage each customer is waiting for."""
+    if isinstance(thr, dict):
+        thr = thr.get(c.get("level") or 0, 0.7)
     if c["code"] in negotiating:
         return "تحت التفاوض"
     if c.get("excluded"):
@@ -58,7 +70,7 @@ def derive_status(c, thr, negotiating):
 
 
 def refresh_status(db, cycle, codes=None):
-    thr, neg = threshold(db), negotiating_codes(db)
+    thr, neg = thresholds_by_level(db), negotiating_codes(db)
     for c in db.cycle_customers(cycle["id"], required_only=True):
         if codes is not None and c["code"] not in codes:
             continue
@@ -122,11 +134,35 @@ def cycle_start(db, cycle):
     return cyc.get("start_date") or f"{cycle['month']}-01"
 
 
+def holidays(db):
+    """Holiday dates from the settings (one per line, dd/mm/yyyy or yyyy-mm-dd)."""
+    out = set()
+    for line in (db.setting("holidays") or "").replace("،", "\n").replace(",", "\n").splitlines():
+        t = line.strip()
+        try:
+            out.add(date.fromisoformat(t) if "-" in t else date(*map(int, reversed(t.split("/")))))
+        except (ValueError, TypeError):
+            continue
+    return out
+
+
 def stage_end(db, cycle, stage):
-    """Last day whose receipts count for a stage: start + stage day − 1 (1 Oct + 7 → 7 Oct)."""
+    """Last day whose receipts count for a stage: the stage day counted from Day 1 (1 Oct + 7 → 7 Oct), in working
+    days when the setting is on (weekend and holidays skipped)."""
     from datetime import timedelta
     start = date.fromisoformat(cycle_start(db, cycle))
-    return (start + timedelta(days=int(db.setting_num(STAGE_DAYS[stage])) - 1)).isoformat()
+    n = int(db.setting_num(STAGE_DAYS[stage]))
+    if db.setting("workdays") != "1":
+        return (start + timedelta(days=n - 1)).isoformat()
+    weekend = {int(x) for x in (db.setting("weekend") or "").split(",") if x.strip().isdigit()}
+    off = holidays(db)
+    d, count = start, 0
+    while True:
+        if d.weekday() not in weekend and d not in off:
+            count += 1
+            if count >= n:
+                return d.isoformat()
+        d += timedelta(days=1)
 
 
 def add_receipts(db, folder, cycle, recs, path, start="", end=""):
@@ -178,9 +214,10 @@ def include(db, cycle, code):
 
 
 # ------------------------------------------------------------------ letters
-def remaining(c):
+def remaining(c, mode="remaining"):
+    """Default letter amount: overdue left after the receipts, or the whole balance left (setting letter_amount)."""
     r = (c["overdue"] or 0) - (c["paid"] or 0)
-    if r <= 0.005:
+    if mode == "balance" or r <= 0.005:
         r = (c["balance"] or 0) - (c["paid"] or 0)
     return round(max(r, 0.0), 2)
 
@@ -188,8 +225,10 @@ def remaining(c):
 def candidates(db, cycle, stage):
     """Customers at the level before this stage, with eligible flag, reason, letter kind and default amount."""
     level = STAGES[stage][0]
-    thr, neg = threshold(db), negotiating_codes(db)
+    thr, neg = threshold(db, stage), negotiating_codes(db)
     unmatched_rule = db.setting("letter_unmatched") == "1"
+    min_letter = db.setting_num("min_letter")
+    mode = db.setting("letter_amount")
     masters = db.customers()
     out = []
     for c in db.cycle_customers(cycle["id"], required_only=True):
@@ -198,8 +237,11 @@ def candidates(db, cycle, stage):
         m = masters.get(c["code"], {})
         pct = c["pct"] or 0
         reasons, eligible = [], True
+        amount = remaining(c, mode)
         if c["code"] in neg:
             eligible, reasons = False, ["تحت التفاوض"]
+        elif m.get("perm_exclude"):
+            eligible, reasons = False, [f"استثناء دائم: {m.get('perm_reason') or ''}"]
         elif c["excluded"]:
             eligible, reasons = False, [f"مستبعد: {c['exclude_reason']}"]
         elif pct >= thr:
@@ -211,6 +253,9 @@ def candidates(db, cycle, stage):
             reasons.append("لم يسدد" if pct <= 0 else f"سدد {pct * 100:.0f}% فقط")
             if stage == "finance" and c["matched"] != 1:
                 reasons.append("غير مطابق" if c["matched"] == 0 else "لم يرجع الكشف موقعًا")
+            if min_letter and amount < min_letter:
+                eligible = False
+                reasons.append(f"المبلغ المتبقي أقل من حد الخطاب ({min_letter:,.0f})")
         if stage == "finance":
             kind = "1003"
         elif stage == "legal":
@@ -218,7 +263,7 @@ def candidates(db, cycle, stage):
         else:
             kind = "1005" if c["pn_letter"] else "1006"
         row = dict(c)
-        row.update(eligible=eligible, reason="، ".join(reasons), kind=kind, amount=remaining(c),
+        row.update(eligible=eligible, reason="، ".join(reasons), kind=kind, amount=amount,
                    cr_no=m.get("cr_no", ""), has_pn=m.get("has_pn"), pn_no=m.get("pn_no", ""))
         if kind == "1005" and not m.get("pn_no"):
             row["reason"] += "، ⚠ رقم السند لأمر غير مسجل في بيانات العميل"
@@ -323,7 +368,7 @@ def cancel_letter(db, cycle_id, serial, reason):
 
 def stop_sale(db, cycle):
     """Customers that must not be sold to (legal letter issued and still below the threshold)."""
-    thr, neg = threshold(db), negotiating_codes(db)
+    thr, neg = threshold(db, "legal"), negotiating_codes(db)
     return [c for c in db.cycle_customers(cycle["id"], required_only=True)
             if (c["level"] or 0) >= 2 and (c["pct"] or 0) < thr and not c["excluded"] and c["code"] not in neg]
 

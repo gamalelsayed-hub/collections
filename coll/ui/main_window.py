@@ -90,25 +90,31 @@ class MainWindow(QMainWindow):
         return not self.readonly
 
     def mail_config(self):
-        return mail_config()
+        cfg = mail_config()
+        if cfg:
+            cfg["cc"] = self.db.setting("mail_cc").strip()
+        return cfg
 
     def open_customer(self, code):
         CustomerDialog(self, code).exec()
         self.customers_page.load()
 
     def update_banner(self):
-        """Remind the accountant of the stage due today."""
+        """Remind the accountant of the current stage of the latest cycle (dates from the cycle start)."""
         today = date.today()
         month = f"{today.year:04d}-{today.month:02d}"
-        cyc = self.db.cycle(month)
-        stage_days = [("day_statements", "تجهيز الكشوف"), ("day_finance", "خطاب الإدارة المالية"),
-                  ("day_legal", "خطاب الإدارة القانونية"), ("day_action", "الإجراء القانوني")]
-        due = [name for key, name in stage_days if today.day >= int(self.db.setting_num(key))]
         parts = []
-        if not cyc:
+        cycles = self.db.cycles()
+        if not self.db.cycle(month) and (not cycles or cycles[0]["month"] < month):
             parts.append(f"⏰ دورة {month_label(month)} لم تبدأ — ارفع تقرير الأعمار")
-        elif due:
-            parts.append(f"⏰ المرحلة الحالية لدورة {month_label(month)}: {due[-1]}")
+        if cycles:
+            cyc = cycles[0]
+            for key, (lvl, name) in stages.STAGES.items():
+                end = stages.stage_end(self.db, cyc, key)
+                if today.isoformat() <= end:
+                    parts.append(f"📅 دورة {month_label(cyc['month'])}: فترة «{name}» تنتهي "
+                                 f"{end[8:10]}/{end[5:7]} ثم أصدر الخطابات")
+                    break
         latest = self.db.cycles()
         if latest:
             stop = stages.stop_sale(self.db, latest[0])

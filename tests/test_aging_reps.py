@@ -44,3 +44,19 @@ def test_suggest_rep():
     assert suggest_rep("محمد حسن", reps)["id"] == 1
     assert suggest_rep("محمد", reps) is None          # ambiguous
     assert suggest_rep("سالم", reps) is None
+
+
+def test_skip_rules():
+    rows = sample_rows()
+    first, mapping = aging.guess_columns(rows)
+    recs = aging.read_rows(rows, first, mapping)
+    recs[0]["guarantee"] = 1000.0                     # 90000001: bank guarantee covers its 500 overdue
+    g = {r["code"]: r for r in aging.group_customers(
+        recs, 30, 60, 0, 0, {"skip_codes": {"90000004": "استثناء دائم: شقيق"}, "skip_reps": ["خالد"],
+                             "skip_classes": [], "guarantee": True})}
+    assert not g["90000001"]["required"] and "ضمان بنكي" in g["90000001"]["skip"]
+    assert not g["90000003"]["required"] and g["90000003"]["skip"] == "مندوب مستثنى: خالد"
+    assert not g["90000004"]["required"] and g["90000004"]["skip"].startswith("استثناء دائم")
+    # the top-N limit counts only customers that were not excluded
+    g = aging.group_customers(recs, 30, 60, 0, 1, {"skip_reps": ["سالم"]})
+    assert [r["code"] for r in g if r["required"]] == ["90000003"]

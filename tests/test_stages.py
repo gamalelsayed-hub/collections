@@ -1,20 +1,12 @@
 """Day 7+ flow on synthetic data."""
 import os
 
-import pytest
 
 from coll import aging, receipts, stages
 from coll.db import DB
 from coll.storage import DataFolder
 from coll.tafqeet import riyal_words
 from tests.test_aging_reps import sample_rows
-
-
-@pytest.fixture(scope="module")
-def qapp():
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PySide6.QtWidgets import QApplication
-    return QApplication.instance() or QApplication([])
 
 
 def setup_cycle(tmp_path):
@@ -123,6 +115,11 @@ def test_full_flow(tmp_path, qapp):
 
 def test_receipts_period(tmp_path):
     folder, db, cyc = setup_cycle(tmp_path)          # October cycle, aging uploaded 1 October
+    # working days (default): 1 Oct 2026 is a Thursday; Fridays/Saturdays and holidays are skipped
+    assert stages.stage_end(db, cyc, "finance") == "2026-10-11"
+    db.set_setting("holidays", "05/10/2026")
+    assert stages.stage_end(db, cyc, "finance") == "2026-10-12"
+    db.set_setting("workdays", "0")                  # calendar days
     assert stages.cycle_start(db, cyc) == "2026-10-01"
     assert stages.stage_end(db, cyc, "finance") == "2026-10-07"
     assert stages.stage_end(db, cyc, "legal") == "2026-10-14"
@@ -142,6 +139,7 @@ def test_receipts_period(tmp_path):
     stages.recompute_paid(db, cyc, "2026-10-01", "2026-10-07")
     assert db.cycle_customer(cyc["id"], "90000001")["paid"] == 100.0
     # the cycle month is the collection month, whenever the aging report was uploaded
+    db.set_setting("workdays", "0")
     db.create_cycle("2026-09", "aging.xlsx", "2026-10-20", [])
     sep = db.cycle("2026-09")
     assert stages.cycle_start(db, sep) == "2026-09-01" and stages.stage_end(db, sep, "finance") == "2026-09-07"

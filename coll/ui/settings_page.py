@@ -2,10 +2,11 @@
 import base64
 import os
 
-from PySide6.QtCore import QSettings, QUrl
+from PySide6.QtCore import QSettings, Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel,
-                               QLineEdit, QListWidget, QPlainTextEdit, QPushButton, QSpinBox, QTabWidget, QVBoxLayout,
+                               QLineEdit, QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox,
+                               QTabWidget, QVBoxLayout,
                                QWidget)
 
 from .. import mailer
@@ -39,10 +40,34 @@ class SettingsPage(QWidget):
         lay.addWidget(tabs)
 
         # ---- rules & stage days
-        w = QWidget()
-        f = QFormLayout(w)
+        inner = QWidget()
+        outer = QVBoxLayout(inner)
+
+        def group(title):
+            g = QGroupBox(title)
+            form = QFormLayout(g)
+            outer.addWidget(g)
+            return form
+
+        def money_box(maximum=10_000_000, step=100):
+            sp = QSpinBox()
+            sp.setRange(0, maximum)
+            sp.setSingleStep(step)
+            sp.setGroupSeparatorShown(True)
+            sp.setSuffix(" ريال")
+            return sp
+
+        def pct_box():
+            sp = QSpinBox()
+            sp.setRange(1, 100)
+            sp.setSuffix(" %")
+            return sp
+
+        f = group("الشركة")
         self.company = QLineEdit()
         f.addRow("اسم الشركة:", self.company)
+
+        f = group("مين يدخل دورة المطابقة (يُطبق عند رفع تقرير الأعمار)")
         self.custody = QComboBox()
         self.credit = QComboBox()
         for cb in (self.custody, self.credit):
@@ -50,15 +75,7 @@ class SettingsPage(QWidget):
                 cb.addItem(f"أكثر من {d} يوم", d)
         f.addRow("عميل عهدة مطلوب مطابقة إذا تأخر:", self.custody)
         f.addRow("عميل آجل مطلوب مطابقة إذا تأخر:", self.credit)
-        self.threshold = QSpinBox()
-        self.threshold.setRange(1, 100)
-        self.threshold.setSuffix(" %")
-        f.addRow("نسبة السداد التي تعفي من الإجراء:", self.threshold)
-        self.min_overdue = QSpinBox()
-        self.min_overdue.setRange(0, 10_000_000)
-        self.min_overdue.setSingleStep(100)
-        self.min_overdue.setGroupSeparatorShown(True)
-        self.min_overdue.setSuffix(" ريال")
+        self.min_overdue = money_box()
         self.min_overdue.setToolTip("العميل الذي متأخره أقل من هذا المبلغ لا يدخل دورة المطابقة ولا تصدر له خطابات")
         f.addRow("أقل مبلغ متأخر للمطابقة (أكثر من):", self.min_overdue)
         self.max_customers = QSpinBox()
@@ -67,17 +84,87 @@ class SettingsPage(QWidget):
         self.max_customers.setSpecialValueText("بدون حد — كل العملاء المتأخرين")
         self.max_customers.setToolTip("مطابقة أكبر عدد من العملاء المتأخرين فقط هذا الشهر، بالترتيب من الأكبر متأخرًا")
         f.addRow("عدد العملاء في الدورة (الأكبر متأخرًا):", self.max_customers)
+        self.guarantee = QCheckBox("العميل الذي عنده ضمان بنكي يغطي المتأخر لا يدخل الدورة")
+        self.rest = QCheckBox("العميل الذي طابق وسدد النسبة في الدورة السابقة يرتاح هذا الشهر")
+        f.addRow(self.guarantee)
+        f.addRow(self.rest)
+        f.addRow(QLabel("استثناء مناديب أو تصنيفات أو عملاء بعينهم: من تبويب «الاستثناءات»."))
+
+        f = group("الخطابات")
+        self.threshold = pct_box()
+        self.threshold_legal = pct_box()
+        self.threshold_action = pct_box()
+        f.addRow("نسبة السداد التي تعفي من خطاب الإدارة المالية:", self.threshold)
+        f.addRow("نسبة السداد التي توقف الخطاب القانوني:", self.threshold_legal)
+        f.addRow("نسبة السداد التي توقف الإجراء القانوني:", self.threshold_action)
+        self.min_letter = money_box()
+        self.min_letter.setSpecialValueText("بدون حد")
+        f.addRow("لا يصدر خطاب إذا كان المبلغ المتبقي أقل من:", self.min_letter)
+        self.letter_amount = QComboBox()
+        self.letter_amount.addItem("المتأخر المتبقي بعد السداد", "remaining")
+        self.letter_amount.addItem("كامل الرصيد المتبقي بعد السداد", "balance")
+        f.addRow("مبلغ الخطاب:", self.letter_amount)
+
+        f = group("المواعيد")
         self.days = {}
         for key, label in (("day_statements", "يوم تجهيز الكشوف"), ("day_finance", "يوم خطاب الإدارة المالية"),
                            ("day_legal", "يوم خطاب الإدارة القانونية"), ("day_action", "يوم الإجراء القانوني")):
             sp = QSpinBox()
-            sp.setRange(1, 28)
+            sp.setRange(1, 60)
             self.days[key] = sp
-            f.addRow(label + " (من الشهر):", sp)
-        b = QPushButton("💾 حفظ")
+            f.addRow(label + " (من بداية الدورة):", sp)
+        self.workdays = QCheckBox("حساب الأيام بأيام العمل (بدون الجمعة والسبت والإجازات)")
+        f.addRow(self.workdays)
+        self.holidays = QPlainTextEdit()
+        self.holidays.setPlaceholderText("تاريخ في كل سطر، مثل 23/09/2026")
+        self.holidays.setMaximumHeight(90)
+        f.addRow("الإجازات الرسمية:", self.holidays)
+
+        f = group("الكشوف")
+        self.attach_aging = QCheckBox("إرفاق صفحة أعمار الديون مع كشف كل عميل (إذا كان إجماليها = رصيد الكشف)")
+        f.addRow(self.attach_aging)
+        self.tolerance = money_box(100_000, 1)
+        f.addRow("أقصى فرق مقبول بين رصيد الكشف وتقرير الأعمار:", self.tolerance)
+
+        b = QPushButton("💾 حفظ الإعدادات")
         b.clicked.connect(self.save_rules)
-        f.addRow(b)
-        tabs.addTab(w, "القواعد والمواعيد")
+        outer.addWidget(b)
+        outer.addStretch()
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(inner)
+        tabs.addTab(scroll, "القواعد والمواعيد")
+
+        # ---- exclusions
+        w = QWidget()
+        v = QVBoxLayout(w)
+        note = QLabel("المحدد هنا لا يدخل أي دورة (يُطبق عند رفع تقرير الأعمار القادم).")
+        note.setWordWrap(True)
+        v.addWidget(note)
+        row = QHBoxLayout()
+        g = QGroupBox("مناديب مستثنون (كما في تقرير الأعمار)")
+        gl = QVBoxLayout(g)
+        self.skip_reps = QListWidget()
+        gl.addWidget(self.skip_reps)
+        row.addWidget(g)
+        g = QGroupBox("تصنيفات عملاء مستثناة")
+        gl = QVBoxLayout(g)
+        self.skip_classes = QListWidget()
+        gl.addWidget(self.skip_classes)
+        row.addWidget(g)
+        v.addLayout(row, 1)
+        g = QGroupBox("عملاء مستثنون دائمًا (من بطاقة العميل أو كليك يمين في شاشة المتابعة)")
+        gl = QVBoxLayout(g)
+        self.perm = QListWidget()
+        gl.addWidget(self.perm)
+        b = QPushButton("↩ إلغاء الاستثناء الدائم للعميل المحدد")
+        b.clicked.connect(self.remove_perm)
+        gl.addWidget(b)
+        v.addWidget(g, 1)
+        b = QPushButton("💾 حفظ الاستثناءات")
+        b.clicked.connect(self.save_exclusions)
+        v.addWidget(b)
+        tabs.addTab(w, "الاستثناءات")
 
         # ---- e-mail
         w = QWidget()
@@ -111,6 +198,9 @@ class SettingsPage(QWidget):
         self.subject = QLineEdit()
         self.body = QPlainTextEdit()
         self.body.setMinimumHeight(140)
+        self.cc = QLineEdit()
+        self.cc.setPlaceholderText("اختياري — مثل manager@altameer.sa (أكثر من إيميل: افصل بفاصلة)")
+        f2.addRow("نسخة لكل إيميل (CC):", self.cc)
         f2.addRow("الموضوع:", self.subject)
         f2.addRow("النص:", self.body)
         v.addWidget(g2)
@@ -174,10 +264,22 @@ class SettingsPage(QWidget):
         self.custody.setCurrentIndex(max(0, self.custody.findData(int(db.setting_num("custody_days")))))
         self.credit.setCurrentIndex(max(0, self.credit.findData(int(db.setting_num("credit_days")))))
         self.threshold.setValue(int(round(db.setting_num("pay_threshold") * 100)))
+        self.threshold_legal.setValue(int(round(db.setting_num("pay_threshold_legal") * 100)))
+        self.threshold_action.setValue(int(round(db.setting_num("pay_threshold_action") * 100)))
         self.min_overdue.setValue(int(db.setting_num("min_overdue")))
         self.max_customers.setValue(int(db.setting_num("max_customers")))
+        self.guarantee.setChecked(db.setting("guarantee_skip") == "1")
+        self.rest.setChecked(db.setting("rest_matched") == "1")
+        self.min_letter.setValue(int(db.setting_num("min_letter")))
+        self.letter_amount.setCurrentIndex(max(0, self.letter_amount.findData(db.setting("letter_amount"))))
         for k, sp in self.days.items():
             sp.setValue(int(db.setting_num(k)))
+        self.workdays.setChecked(db.setting("workdays") == "1")
+        self.holidays.setPlainText(db.setting("holidays"))
+        self.attach_aging.setChecked(db.setting("attach_aging") == "1")
+        self.tolerance.setValue(int(db.setting_num("balance_tolerance")))
+        self.cc.setText(db.setting("mail_cc"))
+        self.load_exclusions()
         s = QSettings()
         self.host.setText(s.value("mail_host", ""))
         self.port.setText(str(s.value("mail_port", "465")))
@@ -204,12 +306,67 @@ class SettingsPage(QWidget):
         db.set_setting("custody_days", self.custody.currentData())
         db.set_setting("credit_days", self.credit.currentData())
         db.set_setting("pay_threshold", self.threshold.value() / 100)
+        db.set_setting("pay_threshold_legal", self.threshold_legal.value() / 100)
+        db.set_setting("pay_threshold_action", self.threshold_action.value() / 100)
         db.set_setting("min_overdue", self.min_overdue.value())
         db.set_setting("max_customers", self.max_customers.value())
+        db.set_setting("guarantee_skip", "1" if self.guarantee.isChecked() else "0")
+        db.set_setting("rest_matched", "1" if self.rest.isChecked() else "0")
+        db.set_setting("min_letter", self.min_letter.value())
+        db.set_setting("letter_amount", self.letter_amount.currentData())
         for k, sp in self.days.items():
             db.set_setting(k, sp.value())
+        db.set_setting("workdays", "1" if self.workdays.isChecked() else "0")
+        db.set_setting("holidays", self.holidays.toPlainText().strip())
+        db.set_setting("attach_aging", "1" if self.attach_aging.isChecked() else "0")
+        db.set_setting("balance_tolerance", self.tolerance.value())
         db.log("تعديل الإعدادات")
-        info(self, "تم الحفظ. القواعد الجديدة تُطبّق عند رفع تقرير الأعمار القادم.")
+        self.win.update_banner()
+        info(self, "تم الحفظ.\n• قواعد دخول الدورة تُطبق عند رفع تقرير الأعمار القادم.\n"
+                   "• قواعد الخطابات والمواعيد تُطبق فورًا على شاشة المتابعة.")
+
+    def load_exclusions(self):
+        db = self.win.db
+        custs = db.customers().values()
+        reps = sorted({c["rep_name"] for c in custs if c.get("rep_name")} | set(db.setting_list("skip_reps")))
+        classes = sorted({c["cls"] for c in custs if c.get("cls")} | set(db.setting_list("skip_classes")))
+        for lst, values, chosen in ((self.skip_reps, reps, set(db.setting_list("skip_reps"))),
+                                    (self.skip_classes, classes, set(db.setting_list("skip_classes")))):
+            lst.clear()
+            for v in values:
+                it = QListWidgetItem(v)
+                it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+                it.setCheckState(Qt.Checked if v in chosen else Qt.Unchecked)
+                lst.addItem(it)
+        self.perm.clear()
+        for c in custs:
+            if c.get("perm_exclude"):
+                it = QListWidgetItem(f"{c['code']} — {c['name']} — {c.get('perm_reason') or ''}")
+                it.setData(Qt.UserRole, c["code"])
+                self.perm.addItem(it)
+
+    def save_exclusions(self):
+        if not self.win.can_edit():
+            return
+        import json
+
+        def checked(lst):
+            return [lst.item(i).text() for i in range(lst.count()) if lst.item(i).checkState() == Qt.Checked]
+        db = self.win.db
+        db.set_setting("skip_reps", json.dumps(checked(self.skip_reps), ensure_ascii=False))
+        db.set_setting("skip_classes", json.dumps(checked(self.skip_classes), ensure_ascii=False))
+        db.log("تعديل الاستثناءات")
+        info(self, "تم حفظ الاستثناءات — تُطبق عند رفع تقرير الأعمار القادم.")
+
+    def remove_perm(self):
+        it = self.perm.currentItem()
+        if not it or not self.win.can_edit():
+            return
+        c = self.win.db.customer(it.data(Qt.UserRole))
+        c.update(perm_exclude=0, perm_reason="")
+        self.win.db.save_customer(c)
+        self.win.db.log("إلغاء استثناء دائم", "", code=c["code"])
+        self.load_exclusions()
 
     def _preset(self):
         d = self.preset.currentData()
@@ -227,6 +384,7 @@ class SettingsPage(QWidget):
         if self.win.can_edit(silent=True):
             self.win.db.set_setting("mail_subject", self.subject.text())
             self.win.db.set_setting("mail_body", self.body.toPlainText())
+            self.win.db.set_setting("mail_cc", self.cc.text().strip())
         info(self, "تم حفظ إعدادات الإيميل.")
 
     def test_mail(self):

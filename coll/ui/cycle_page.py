@@ -5,10 +5,11 @@ from datetime import date
 from PySide6.QtCore import QSettings, QUrl, Qt
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QHBoxLayout,
-                               QLabel, QLineEdit, QListWidget, QPushButton, QVBoxLayout, QWidget)
+                               QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget)
 
 from .. import aging, day1, mailer
 from ..reps import suggest_rep
+from .mail_preview import MailPreviewDialog
 from .widgets import (NAVY, STATUS_COLORS, ColumnMapDialog, MonthDialog, ask, color_item, error, info, money,
                       month_label, ro, styled_table, warn)
 
@@ -238,7 +239,8 @@ class CyclePage(QWidget):
                                              "(الكشوف المرفوعة تبقى)"):
             return
         grouped = aging.group_customers(recs, db.setting_num("custody_days"), db.setting_num("credit_days"),
-                                        db.setting_num("min_overdue"), db.setting_num("max_customers"))
+                                        db.setting_num("min_overdue"), db.setting_num("max_customers"),
+                                        self.skip_rules(month))
         new, moved = db.upsert_from_aging(recs)
         db.create_cycle(month, os.path.basename(path), date.today().isoformat(), grouped)
         req = [g for g in grouped if g["required"]]
@@ -256,12 +258,20 @@ class CyclePage(QWidget):
         unmapped = [a for a in aging.rep_names(recs) if not db.rep_for(a)]
         limit = int(db.setting_num("max_customers"))
         small = [g for g in grouped if not g["required"] and 0.005 < g["overdue"] <= db.setting_num("min_overdue")]
-        cut = [g for g in grouped if not g["required"] and g["overdue"] > db.setting_num("min_overdue")]
+        skipped = [g for g in grouped if g.get("skip")]
+        cut = [g for g in grouped if not g["required"] and not g.get("skip")
+               and g["overdue"] > db.setting_num("min_overdue")]
         msg = [f"دورة {month_label(month)}: {len(grouped)} عميل، منهم {len(req)} مطلوب مطابقة بمتأخر "
                f"{money(sum(r['overdue'] for r in req))}."]
         if small:
             msg.append(f"• {len(small)} عميل متأخره أقل من {db.setting_num('min_overdue'):,.0f} ريال لم يدخل الدورة "
                        "(تقدر تغير الحد من الإعدادات).")
+        if skipped:
+            kinds = {}
+            for g in skipped:
+                kinds.setdefault(g["skip"].split(":")[0] if ":" in g["skip"] else "ضمان بنكي", []).append(g)
+            msg.append(f"• {len(skipped)} عميل مستثنى بالإعدادات: "
+                       + "، ".join(f"{k} ({len(v)})" for k, v in kinds.items()))
         if cut:
             msg.append(f"• الدورة محددة بأكبر {limit} عميل متأخر — {len(cut)} عميل آخر لم يدخل هذا الشهر "
                        f"بمتأخر {money(sum(g['overdue'] for g in cut))}.")
@@ -278,6 +288,21 @@ class CyclePage(QWidget):
         self.load()
         self.win.update_banner()
         info(self, "\n".join(msg))
+
+    def skip_rules(self, month):
+        """Exclusions from the settings, applied when the aging report is uploaded."""
+        db = self.win.db
+        codes = {c["code"]: f"استثناء دائم: {c['perm_reason'] or 'بدون سبب'}"
+                 for c in db.customers().values() if c.get("perm_exclude")}
+        if db.setting("rest_matched") == "1":
+            prev = db.previous_cycle(month)
+            if prev:
+                thr = db.setting_num("pay_threshold")
+                for c in db.cycle_customers(prev["id"], required_only=True):
+                    if c["matched"] == 1 and (c["pct"] or 0) >= thr and c["code"] not in codes:
+                        codes[c["code"]] = f"شهر راحة: طابق وسدد في دورة {prev['month']}"
+        return {"skip_codes": codes, "skip_reps": db.setting_list("skip_reps"),
+                "skip_classes": db.setting_list("skip_classes"), "guarantee": db.setting("guarantee_skip") == "1"}
 
     # ---------------------------------------------------------------- step 2
     def copy_codes(self):
@@ -390,32 +415,22 @@ class CyclePage(QWidget):
         if not cfg:
             warn(self, "اضبط إعدادات الإيميل أولًا من شاشة الإعدادات، أو استخدم «تنزيل الكل» وأرسل يدويًا.")
             return
-        sendable = [p for p in self.packages if p["email"]]
-        skipped = [p for p in self.packages if not p["email"]]
-        dlg = QDialog(self)
-        dlg.setWindowTitle("إرسال للمناديب")
-        v = QVBoxLayout(dlg)
-        v.addWidget(QLabel("سيتم إرسال هذه الملفات:"))
-        lst = QListWidget()
-        for p in sendable:
-            lst.addItem(f"{p['rep']} ← {p['email']} ({len(p['customers'])} كشف)")
-        v.addWidget(lst)
-        if skipped:
-            v.addWidget(QLabel("لن تُرسل (بدون إيميل): " + "، ".join(p["rep"] for p in skipped)))
-        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.button(QDialogButtonBox.Ok).setText("إرسال")
-        bb.accepted.connect(dlg.accept)
-        bb.rejected.connect(dlg.reject)
-        v.addWidget(bb)
-        if dlg.exec() != QDialog.Accepted or not sendable:
-            return
         db = self.win.db
         month = month_label(self.cycle["month"])
-        msgs = []
-        for p in sendable:
+        mails = []
+        for p in self.packages:
             fmt = {"rep": p["rep"], "month": month, "count": len(p["customers"])}
-            msgs.append((p["email"], db.setting("mail_subject").format(**fmt), db.setting("mail_body").format(**fmt),
-                         [p["zip"]]))
+            mails.append({"rep": p["rep"], "to": p["email"], "subject": db.setting("mail_subject").format(**fmt),
+                          "body": db.setting("mail_body").format(**fmt), "files": [p["zip"]],
+                          "count": f"{len(p['customers'])} كشف", "package": p})
+        dlg = MailPreviewDialog(self, mails, cfg.get("cc", ""), "مراجعة إيميلات الكشوف قبل الإرسال")
+        if dlg.exec() != QDialog.Accepted:
+            return
+        chosen = dlg.selected()
+        if not chosen:
+            return
+        sendable = [m["package"] for m in chosen]
+        msgs = [(m["to"], m["subject"], m["body"], m["files"]) for m in chosen]
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             results = mailer.send_all(cfg, msgs)

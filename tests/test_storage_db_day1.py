@@ -43,6 +43,7 @@ def test_lock_and_backup(tmp_path):
 def test_day1_flow(tmp_path, monkeypatch):
     folder = DataFolder(str(tmp_path / "data"))
     db = DB(folder.db_path, "tester")
+    db.set_setting("attach_aging", "0")
     db.save_rep({"name": "سالم عبدالله", "email": "salem@example.com", "emp_no": "1", "branch": "", "title": ""})
     rep = db.reps()[0]
     db.set_alias("سالم", rep["id"])
@@ -89,6 +90,7 @@ def test_next_month_statements(tmp_path, monkeypatch):
     attached for customers who did not reconcile."""
     folder = DataFolder(str(tmp_path / "data"))
     db = DB(folder.db_path, "tester")
+    db.set_setting("attach_aging", "0")
     rows = sample_rows()
     first, mapping = aging.guess_columns(rows)
     recs = aging.read_rows(rows, first, mapping)
@@ -134,3 +136,38 @@ def test_damaged_pdf_is_repaired(tmp_path):
     junk.write_bytes(b"not a pdf")
     with pytest.raises(DamagedPdf):
         readable(str(junk))
+
+
+def test_aging_page_added(tmp_path, monkeypatch, qapp):
+    folder = DataFolder(str(tmp_path / "data"))
+    db = DB(folder.db_path, "tester")
+    rows = sample_rows()
+    first, mapping = aging.guess_columns(rows)
+    recs = aging.read_rows(rows, first, mapping)
+    db.create_cycle("2026-10", "aging.xlsx", "2026-10-01", aging.group_customers(recs, 30, 60))
+    cycle = db.cycle("2026-10")
+    src = blank_pdf(tmp_path / "s.pdf", 2)
+    monkeypatch.setattr(ST, "read_pdf", lambda p: ([ST.Section("90000001", "عميل أ", "1140101", "العملاء", src,
+                                                               [0, 1], 600.0)], []))
+    day1.attach_file(db, folder, cycle, src, "credit")
+    day1.build_packages(db, folder, cycle)
+    pdf = os.path.join(folder.path, db.cycle_customer(cycle["id"], "90000001")["statement"])
+    assert len(PdfReader(pdf).pages) == 3          # statement (2) + aging page
+
+
+def test_aging_page_skipped_when_totals_differ(tmp_path, monkeypatch, qapp):
+    folder = DataFolder(str(tmp_path / "data"))
+    db = DB(folder.db_path, "tester")
+    rows = sample_rows()
+    first, mapping = aging.guess_columns(rows)
+    recs = aging.read_rows(rows, first, mapping)
+    db.create_cycle("2026-10", "aging.xlsx", "2026-10-01", aging.group_customers(recs, 30, 60))
+    cycle = db.cycle("2026-10")
+    src = blank_pdf(tmp_path / "s.pdf", 2)
+    monkeypatch.setattr(ST, "read_pdf", lambda p: ([ST.Section("90000001", "عميل أ", "1140101", "العملاء", src,
+                                                               [0, 1], 650.0)], []))   # aging total is 600
+    day1.attach_file(db, folder, cycle, src, "credit")
+    day1.build_packages(db, folder, cycle)
+    c = db.cycle_customer(cycle["id"], "90000001")
+    assert len(PdfReader(os.path.join(folder.path, c["statement"])).pages) == 2
+    assert "لم تُرفق صفحة الأعمار" in c["warning"]

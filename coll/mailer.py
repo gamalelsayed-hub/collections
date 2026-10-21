@@ -36,10 +36,12 @@ def connect(host, port, user, password):
     return server
 
 
-def build_message(sender, sender_name, to, subject, body, attachments):
+def build_message(sender, sender_name, to, subject, body, attachments, cc=""):
     msg = EmailMessage()
     msg["From"] = f"{sender_name} <{sender}>" if sender_name else sender
     msg["To"] = to
+    if cc:
+        msg["Cc"] = cc
     msg["Subject"] = subject
     msg.set_content(body)
     for path in attachments:
@@ -51,15 +53,15 @@ def build_message(sender, sender_name, to, subject, body, attachments):
 
 
 def send_all(config, messages, progress=None):
-    """config: dict(host, port, user, password, sender_name). messages: [(to, subject, body, [files])].
-    Returns [(to, ok, error)]."""
+    """config: dict(host, port, user, password, sender_name, cc). messages: [(to, subject, body, [files])] —
+    one separate e-mail per recipient. Returns [(to, ok, error)]."""
     results = []
     server = connect(config["host"], config["port"], config["user"], config["password"])
     try:
         for i, (to, subject, body, files) in enumerate(messages):
             try:
                 server.send_message(build_message(config["user"], config.get("sender_name", ""), to, subject, body,
-                                                  files))
+                                                  files, config.get("cc", "")))
                 results.append((to, True, ""))
             except Exception as e:  # noqa: BLE001 - reported per recipient
                 results.append((to, False, str(e)))

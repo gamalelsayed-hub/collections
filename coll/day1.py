@@ -3,6 +3,7 @@ check them, build one statement per customer and one ZIP per rep."""
 import os
 import re
 import shutil
+import tempfile
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -65,6 +66,7 @@ def review(db, cycle):
     """Check every required customer against its statement sections. Updates status/warnings and returns
     a list of dicts for the screen."""
     secs = db.sections(cycle["id"])
+    tol = db.setting_num("balance_tolerance")
     prev = db.previous_cycle(cycle["month"])
     prev_cust = {x["code"]: x for x in db.cycle_customers(prev["id"])} if prev else {}
     prev_secs = db.sections(prev["id"]) if prev else {}
@@ -75,7 +77,7 @@ def review(db, cycle):
         c["prepend"] = ""
         pc = prev_cust.get(c["code"])
         if parts and pc:
-            warnings += _carry_over(c, parts, pc, prev_secs.get(c["code"], []), prev["month"])
+            warnings += _carry_over(c, parts, pc, prev_secs.get(c["code"], []), prev["month"], tol)
         if not parts:
             status, total, detail = "كشف ناقص", None, ""
         else:
@@ -88,7 +90,7 @@ def review(db, cycle):
                 warnings.append(f"⚠ العميل له كشف آجل وكشف عهدة — تم دمجهما في ملف واحد. راجع الرصيد: {detail}")
             if any(p["balance"] is None for p in parts):
                 warnings.append("⚠ لم يُقرأ رصيد أحد الكشوف — راجعه يدويًا")
-            if abs(total - (c["balance"] or 0)) > BALANCE_TOLERANCE:
+            if abs(total - (c["balance"] or 0)) > tol:
                 warnings.append(f"⚠ رصيد الكشف {total:,.2f} لا يساوي رصيد تقرير الأعمار {c['balance']:,.2f} "
                                 f"(فرق {total - c['balance']:,.2f})")
         warning = " | ".join(w for w in warnings if w)
@@ -102,7 +104,7 @@ def review(db, cycle):
     return out
 
 
-def _carry_over(c, parts, pc, prev_parts, prev_month):
+def _carry_over(c, parts, pc, prev_parts, prev_month, tol=BALANCE_TOLERANCE):
     """Monthly statements (starting after last month's statement): check the opening balance against the balance
     the customer confirmed, or attach last month's statement when the customer did not reconcile."""
     starts = [p.get("date_from") or "" for p in parts]
@@ -112,7 +114,7 @@ def _carry_over(c, parts, pc, prev_parts, prev_month):
     if pc["matched"] == 1:
         openings = [p.get("opening") for p in parts]
         if None not in openings and pc["stmt_balance"] is not None \
-                and abs(sum(openings) - pc["stmt_balance"]) > BALANCE_TOLERANCE:
+                and abs(sum(openings) - pc["stmt_balance"]) > tol:
             return [f"⚠ الرصيد الافتتاحي {sum(openings):,.2f} لا يساوي الرصيد الذي طابق عليه العميل في دورة "
                     f"{prev_month} ({pc['stmt_balance']:,.2f})"]
         return []
@@ -120,6 +122,34 @@ def _carry_over(c, parts, pc, prev_parts, prev_month):
         c["prepend"] = pc["statement"]
         return [f"📎 العميل لم يطابق في دورة {prev_month} — يُرفق كشف الشهر السابق قبل كشف هذا الشهر"]
     return []
+
+
+def aging_page(db, folder, c, out):
+    """One page on the letterhead: the customer's aging buckets from the aging report and the overdue amount."""
+    from . import letters as L
+    from .stages import letterhead
+    as_of = max((p.get("date_to") or "" for p in c.get("parts") or []), default="")
+    # ranges in words: «0 - 30» would be flipped to «30 - 0» inside Arabic text
+    buckets = [("من 0 إلى 30 يوم", c["b0"]), ("من 31 إلى 60 يوم", c["b1"]), ("من 61 إلى 90 يوم", c["b2"]),
+               ("من 91 إلى 120 يوم", c["b3"]), ("أكثر من 120 يوم", c["b4"])]
+    # Qt draws table columns left to right: write them reversed so «0 - 30» is on the right
+    cols = [("الإجمالي", c["balance"])] + buckets[::-1]
+    head = "".join(f'<td align="center" bgcolor="#12355b"><font color="white"><b>{t}</b></font></td>' for t, _ in cols)
+    vals = "".join(f'<td align="center">{L.money(v or 0)}</td>' for _, v in cols)
+    body = (
+        '<p dir="rtl" align="center" style="font-size:15pt; font-weight:bold;">أعمار الديون</p>'
+        f'<p dir="rtl" align="right" style="font-size:12pt;"><b>العميل:</b> {c["name"]}<br/>'
+        f'<b>رقم العميل:</b> {c["code"]}<br/><b>نوع الحساب:</b> {c.get("types") or ""}'
+        + (f'<br/><b>حتى تاريخ:</b> {L.fmt_date(as_of)}' if as_of else "") + '</p>'
+        '<table dir="rtl" width="100%" border="1" cellspacing="0" cellpadding="6" style="font-size:11pt;">'
+        f'<tr>{head}</tr><tr>{vals}</tr></table>'
+        f'<p dir="rtl" align="right" style="font-size:13pt; margin-top:14px;"><b>المبلغ المتأخر المطلوب سداده:</b> '
+        f'{L.money(c["overdue"] or 0)} ريال سعودي<br/><b>إجمالي الأعمار = رصيد كشف الحساب:</b> '
+        f'{L.money(c["balance"] or 0)} ريال سعودي</p>'
+        '<p dir="rtl" align="right" style="font-size:11pt; color:#475467;">الأعمار من تقرير أعمار الديون لدى الشركة، '
+        'وتُحسب بالأيام من تاريخ الفاتورة. نرجو مراجعتها مع كشف الحساب المرفق.</p>')
+    L.write_pdf([body], out, letterhead(db, folder), "أعمار الديون")
+    return out
 
 
 def rep_of(db, rep_name):
@@ -131,6 +161,7 @@ def build_packages(db, folder, cycle):
     """Write one PDF per customer (credit + custody merged) and one ZIP per rep with a summary sheet.
     Returns [{rep, email, zip, customers}] and the customers without a rep."""
     rows = review(db, cycle)
+    tol = db.setting_num("balance_tolerance")
     month = cycle["month"]
     base = folder.files_dir(month, "statements")
     shutil.rmtree(base, ignore_errors=True)
@@ -147,7 +178,20 @@ def build_packages(db, folder, cycle):
         old = os.path.join(folder.path, c["prepend"]) if c["prepend"] else ""
         if old and os.path.exists(old):
             parts.insert(0, (old, None))
+        aging_pdf = ""
+        balance_ok = c["stmt_balance"] is not None and abs(c["stmt_balance"] - (c["balance"] or 0)) <= tol
+        if db.setting("attach_aging") == "1" and not balance_ok:
+            # the aging total must equal the statement balance, or the customer sees two different figures
+            warn = "⚠ لم تُرفق صفحة الأعمار لأن إجمالي الأعمار لا يساوي رصيد الكشف"
+            c["warning"] = " | ".join(w for w in (c["warning"], warn) if w)
+            db.update_cycle_customer(cycle["id"], c["code"], warning=c["warning"])
+        if db.setting("attach_aging") == "1" and balance_ok:
+            aging_pdf = os.path.join(tempfile.mkdtemp(prefix="coll-"), "aging.pdf")
+            aging_page(db, folder, c, aging_pdf)
+            parts.append((aging_pdf, None))
         ST.write_pdf(parts, pdf, renumber=True)
+        if aging_pdf:
+            shutil.rmtree(os.path.dirname(aging_pdf), ignore_errors=True)
         db.update_cycle_customer(cycle["id"], c["code"], statement=os.path.relpath(pdf, folder.path))
         entry = by_rep.setdefault(key, {"rep": key, "email": rep["email"] if rep else "", "rep_record": rep,
                                         "customers": [], "dir": rep_dir})

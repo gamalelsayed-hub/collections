@@ -47,6 +47,12 @@ class CustomerDialog(QDialog):
         self.notes = QPlainTextEdit(str(self.c.get("notes") or ""))
         self.notes.setMaximumHeight(80)
         f.addRow("ملاحظات:", self.notes)
+        self.perm = QCheckBox("استثناء دائم — لا يدخل أي دورة مطابقة ولا تصدر له خطابات")
+        self.perm.setChecked(bool(self.c.get("perm_exclude")))
+        self.perm_reason = QLineEdit(str(self.c.get("perm_reason") or ""))
+        self.perm_reason.setPlaceholderText("سبب الاستثناء (مثل: عميل شقيق، جهة حكومية...)")
+        f.addRow(self.perm)
+        f.addRow("سبب الاستثناء:", self.perm_reason)
         tabs.addTab(w, "البيانات")
         hist = styled_table(["الدورة", "الحالة", "الرصيد", "المتأخر", "المسدد", "النسبة", "رصيد الكشف", "التنبيهات"])
         rows = []
@@ -99,6 +105,14 @@ class CustomerDialog(QDialog):
         c["pn_value"] = self.pn_value.value() or None
         c["pn_date"] = self.pn_date.text().strip()
         c["notes"] = self.notes.toPlainText().strip()
+        if self.perm.isChecked() and not self.perm_reason.text().strip():
+            warn(self, "اكتب سبب الاستثناء الدائم.")
+            return
+        if bool(self.perm.isChecked()) != bool(self.c.get("perm_exclude")):
+            self.win.db.log("استثناء دائم" if self.perm.isChecked() else "إلغاء استثناء دائم",
+                            self.perm_reason.text().strip(), code=c["code"])
+        c["perm_exclude"] = 1 if self.perm.isChecked() else 0
+        c["perm_reason"] = self.perm_reason.text().strip() if self.perm.isChecked() else ""
         self.win.db.save_customer(c)
         self.win.db.log("تعديل بيانات عميل", code=c["code"])
         self.accept()

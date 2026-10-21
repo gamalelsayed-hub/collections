@@ -56,7 +56,9 @@ MIGRATIONS = [
     ("stmt_sections", "opening", "REAL"),
     ("stmt_sections", "date_from", "TEXT DEFAULT ''"),
     ("stmt_sections", "date_to", "TEXT DEFAULT ''"),
-    ("cycles", "start_date", "TEXT DEFAULT ''"),          # Day 1 of the collection period (receipts count from it)
+    ("cycles", "start_date", "TEXT DEFAULT ''"),
+    ("customers", "perm_exclude", "INTEGER DEFAULT 0"),   # never included in the cycles
+    ("customers", "perm_reason", "TEXT DEFAULT ''"),          # Day 1 of the collection period (receipts count from it)
     ("letters", "rep_name", "TEXT DEFAULT ''"),
     ("letters", "cancel_reason", "TEXT DEFAULT ''"),
 ]
@@ -69,6 +71,20 @@ DEFAULTS = {
     "pay_threshold": "0.7",
     "min_overdue": "500",
     "max_customers": "0",
+    "skip_reps": "[]",              # aging rep names never included (e.g. رئيسي، عميل مورد)
+    "skip_classes": "[]",           # customer classifications never included
+    "guarantee_skip": "1",          # bank guarantee ≥ overdue → not included
+    "rest_matched": "0",            # matched and paid last month → rests this month
+    "min_letter": "0",              # no letter when the amount left is below this
+    "pay_threshold_legal": "0.7",
+    "pay_threshold_action": "0.7",
+    "letter_amount": "remaining",   # remaining overdue | balance
+    "workdays": "1",                # stage periods counted in working days
+    "weekend": "4,5",               # Friday, Saturday (Python weekday numbers)
+    "holidays": "",
+    "mail_cc": "",
+    "balance_tolerance": "1",
+    "attach_aging": "1",            # add an aging table page to each customer statement
     "day_statements": "1",
     "day_finance": "7",
     "day_legal": "14",
@@ -88,7 +104,7 @@ DEFAULTS = {
 CYCLE_FIELDS = ["code", "name", "rep_name", "types", "balance", "overdue", "b0", "b1", "b2", "b3", "b4", "required",
                 "status", "statement", "stmt_balance", "stmt_detail", "warning"]
 CUSTOMER_FIELDS = ["code", "name", "cr_no", "phone", "email", "region", "branch", "rep_name", "ctype", "cls",
-                   "has_pn", "pn_no", "pn_value", "pn_date", "notes"]
+                   "has_pn", "pn_no", "pn_value", "pn_date", "notes", "perm_exclude", "perm_reason"]
 
 
 def now():
@@ -119,6 +135,12 @@ class DB:
     def setting(self, key):
         r = self.con.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
         return r[0] if r else DEFAULTS.get(key, "")
+
+    def setting_list(self, key):
+        try:
+            return list(json.loads(self.setting(key) or "[]"))
+        except ValueError:
+            return []
 
     def setting_num(self, key):
         try:
@@ -231,7 +253,8 @@ class DB:
 
     def save_customer(self, c):
         fields = CUSTOMER_FIELDS + ["updated"]
-        vals = [c.get(f, "") if f not in ("has_pn", "pn_value") else c.get(f) for f in CUSTOMER_FIELDS] + [now()]
+        vals = [c.get(f, "") if f not in ("has_pn", "pn_value", "perm_exclude") else c.get(f) for f in CUSTOMER_FIELDS] \
+            + [now()]
         self.con.execute(f"INSERT OR REPLACE INTO customers({', '.join(fields)}) VALUES({','.join('?' * len(fields))})",
                          vals)
         self.con.commit()

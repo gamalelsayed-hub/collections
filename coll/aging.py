@@ -98,7 +98,12 @@ def read_rows(rows, first, mapping):
     return out
 
 
-def group_customers(rows, custody_days, credit_days, min_overdue=0.005, max_customers=0):
+def group_customers(rows, custody_days, credit_days, min_overdue=0.005, max_customers=0, rules=None):
+    """rules (optional): skip_codes {code: reason}, skip_reps / skip_classes (names), guarantee (bool) —
+    customers matching a rule are not required; the reason is kept in skip/warning."""
+    rules = rules or {}
+    skip_reps = {norm(x) for x in rules.get("skip_reps", ())}
+    skip_classes = {norm(x) for x in rules.get("skip_classes", ())}
     """One record per customer code: totals, overdue, types and the responsible rep."""
     groups = {}
     for r in rows:
@@ -125,9 +130,23 @@ def group_customers(rows, custody_days, credit_days, min_overdue=0.005, max_cust
         if len(reps) > 1:
             rec["warning"] = f"العميل مسجل على أكثر من مندوب: {'، '.join(reps)}"
         rec["required"] = 1 if rec["overdue"] > max(min_overdue, 0.005) else 0   # small overdue amounts are skipped
-        rec["status"] = "مطلوب مطابقة" if rec["required"] else ""
         for f in ("region", "branch", "cls", "ctype"):
             rec[f] = main[f]
+        rec["guarantee"] = max(x.get("guarantee") or 0 for x in rs)
+        rec["skip"] = ""
+        if rec["required"]:
+            if code in rules.get("skip_codes", {}):
+                rec["skip"] = rules["skip_codes"][code]
+            elif norm(rec["rep_name"]) in skip_reps:
+                rec["skip"] = f"مندوب مستثنى: {rec['rep_name']}"
+            elif rec["cls"] and norm(rec["cls"]) in skip_classes:
+                rec["skip"] = f"تصنيف مستثنى: {rec['cls']}"
+            elif rules.get("guarantee") and rec["guarantee"] >= rec["overdue"] > 0:
+                rec["skip"] = f"ضمان بنكي {rec['guarantee']:,.2f} يغطي المتأخر"
+            if rec["skip"]:
+                rec["required"] = 0
+                rec["warning"] = " | ".join(w for w in (rec["warning"], rec["skip"]) if w)
+        rec["status"] = "مطلوب مطابقة" if rec["required"] else ""
         out.append(rec)
     out.sort(key=lambda r: -r["overdue"])
     if max_customers:
