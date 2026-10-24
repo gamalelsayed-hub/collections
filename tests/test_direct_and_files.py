@@ -119,3 +119,19 @@ def test_letter_paper(tmp_path, qapp):
     stages.render_letter(db, folder, "1004PN", cust, 1000, "S-1", "2026-10-20", None, out)
     from pypdf import PdfReader
     assert len(PdfReader(out).pages) == 1          # the legal letter stays on one page of the letter paper
+
+
+def test_clear_trial(tmp_path):
+    folder, db, cyc = setup_cycle(tmp_path)
+    src = tmp_path / "سجل.pdf"
+    src.write_bytes(b"%PDF-1.4")
+    A.add(db, folder, "90000001", "cr", str(src))
+    db.next_serial("1003")
+    db.save_template("1003", "<p>نص معدل</p>", "X-{رقم}")
+    db.set_setting("min_overdue", "800")
+    db.clear_trial()
+    assert not db.cycles() and not db.events() and db.serial_counter("1003") == 0
+    assert db.customers() and db.customer_files("90000001") and db.reps()
+    assert db.template("1003")["custom"] and db.setting("min_overdue") == "800"
+    db.clear_trial(customers=True)
+    assert not db.customers() and not db.customer_files()

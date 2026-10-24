@@ -544,3 +544,20 @@ class DB:
     def delete_customer_file(self, fid):
         self.con.execute("DELETE FROM customer_files WHERE id=?", (fid,))
         self.con.commit()
+
+    # ---------------- start over (after trying the program)
+    TRIAL_TABLES = ["cycles", "cycle_customers", "events", "letters", "stmt_sections", "receipts", "negotiations"]
+
+    def clear_trial(self, customers=False, serials=True):
+        """Delete the cycles and everything done in them (statements, receipts, letters, negotiations, log).
+        Settings, users, reps, templates, column maps and (unless customers=True) the customer master and its
+        attachments are kept. serials: letter numbers start again from 0001."""
+        for t in self.TRIAL_TABLES:
+            self.con.execute(f"DELETE FROM {t}")
+        if serials:
+            self.con.execute("DELETE FROM serials")
+        if customers:
+            self.con.execute("DELETE FROM customers")
+            self.con.execute("DELETE FROM customer_files")
+        self.con.commit()
+        self.con.execute("VACUUM")

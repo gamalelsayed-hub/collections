@@ -1,10 +1,11 @@
 """Settings: rules and dates, e-mail, users, data folder and backups."""
 import base64
 import os
+import shutil
 
 from PySide6.QtCore import QSettings, Qt, QUrl
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox,
                                QTabWidget, QVBoxLayout,
                                QWidget)
@@ -278,6 +279,23 @@ class SettingsPage(QWidget):
             bar.addWidget(b)
         bar.addStretch()
         v.addLayout(bar)
+        g = QGroupBox("البدء من جديد بعد التجربة")
+        gv = QVBoxLayout(g)
+        note = QLabel("يمسح الدورات وكل ما تم فيها: الكشوف، سندات القبض، المطابقات، الخطابات، التفاوض، وسجل العمليات، "
+                      "والملفات المولدة لها. يبقى: الإعدادات، المستخدمون، المناديب، النماذج، ورق الخطابات والختم "
+                      "والتوقيع. تُحفظ نسخة احتياطية قبل المسح (تقدر ترجع لها من القائمة أعلاه).")
+        note.setWordWrap(True)
+        gv.addWidget(note)
+        self.wipe_serials = QCheckBox("ترقيم الخطابات يبدأ من جديد (0001)")
+        self.wipe_serials.setChecked(True)
+        self.wipe_customers = QCheckBox("ومسح بيانات العملاء ومرفقاتهم أيضًا (السجل التجاري، السند لأمر، الإيميل...)")
+        gv.addWidget(self.wipe_serials)
+        gv.addWidget(self.wipe_customers)
+        b = QPushButton("🧹 مسح بيانات التجربة")
+        b.setStyleSheet("color:#b42318; font-weight:700;")
+        b.clicked.connect(self.clear_trial)
+        gv.addWidget(b, 0, Qt.AlignLeft)
+        v.addWidget(g)
         tabs.addTab(w, "البيانات والنسخ الاحتياطية")
 
     # ---------------------------------------------------------------- load
@@ -473,6 +491,35 @@ class SettingsPage(QWidget):
         if self.win.can_edit():
             self.win.folder.backup("manual")
             self.load()
+
+    def clear_trial(self):
+        if not self.win.can_edit():
+            return
+        db = self.win.db
+        n = len(db.cycles())
+        what = "الدورات (" + str(n) + ") وكل الكشوف والسندات والخطابات والتفاوض وسجل العمليات"
+        if self.wipe_customers.isChecked():
+            what += "، وبيانات العملاء ومرفقاتهم"
+        if not ask(self, f"سيتم مسح: {what}.\nستُحفظ نسخة احتياطية قبل المسح.\n\nمتأكد؟"):
+            return
+        word, ok = QInputDialog.getText(self, "تأكيد المسح", "اكتب كلمة: مسح")
+        if not ok or word.strip() != "مسح":
+            return
+        folder = self.win.folder
+        backup = folder.backup("before-clear")
+        db.clear_trial(customers=self.wipe_customers.isChecked(), serials=self.wipe_serials.isChecked())
+        removed = 0
+        files = os.path.join(folder.path, "files")
+        for name in os.listdir(files):
+            if name == "customers" and not self.wipe_customers.isChecked():
+                continue
+            shutil.rmtree(os.path.join(files, name), ignore_errors=True)
+            removed += 1
+        db.log("مسح بيانات التجربة", "مع العملاء" if self.wipe_customers.isChecked() else "")
+        self.win.update_banner()
+        self.load()
+        info(self, "تم المسح. ابدأ دورة أكتوبر من شاشة «الدورة الشهرية (يوم 1)».\n"
+                   f"النسخة الاحتياطية: {os.path.basename(backup) if backup else '—'}")
 
     def restore(self):
         if not self.win.can_edit():
