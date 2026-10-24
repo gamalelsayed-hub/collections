@@ -317,9 +317,11 @@ def _summary_sheet(customers, rep, month, path):
     wb.save(path)
 
 
-def export_all(packages, dest_dir):
+def export_all(packages, dest_dir, progress=None):
     """Copy every rep ZIP into a folder chosen by the user."""
     os.makedirs(dest_dir, exist_ok=True)
-    for p in packages:
+    for i, p in enumerate(packages):
+        if progress:
+            progress(i, len(packages), os.path.basename(p["zip"]))
         shutil.copy2(p["zip"], dest_dir)
     return dest_dir

@@ -509,15 +509,14 @@ class FollowPage(QWidget):
             return
         if not ask(self, f"إصدار نموذج تحديث البيانات لـ {len(codes)} عميل؟"):
             return
-        QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            pk = direct.issue_forms(self.win.db, self.win.folder, self.cycle, codes,
-                                    self.date.date().toString("yyyy-MM-dd"))
+            with Progress(self, "إصدار نماذج تحديث البيانات") as bar:
+                pk = direct.issue_forms(self.win.db, self.win.folder, self.cycle, codes,
+                                        self.date.date().toString("yyyy-MM-dd"), bar)
+                bar(len(codes), len(codes), "تجهيز ملف لكل مندوب")
         except Exception as e:  # noqa: BLE001
-            QApplication.restoreOverrideCursor()
             error(self, f"تعذر إصدار النماذج:\n{e}")
             return
-        QApplication.restoreOverrideCursor()
         self.packages = pk
         self.refresh()
         self.packages = pk     # refresh() clears them; keep them for «إرسال الخطابات للمناديب»
@@ -549,14 +548,14 @@ class FollowPage(QWidget):
         if dlg.exec() != QDialog.Accepted:
             return
         chosen = dlg.selected()
-        QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            results = mailer.send_all(cfg, [(m["to"], m["subject"], m["body"], m["files"]) for m in chosen])
+            with Progress(self, "إرسال المصادقة للعملاء") as bar:
+                bar.step(0, "الاتصال بخادم الإيميل")
+                results = mailer.send_all(cfg, [(m["to"], m["subject"], m["body"], m["files"]) for m in chosen],
+                                          lambda d, t: bar(d, t, "إيميل مرسل"))
         except Exception as e:  # noqa: BLE001
-            QApplication.restoreOverrideCursor()
             error(self, f"تعذر الاتصال بخادم الإيميل:\n{e}")
             return
-        QApplication.restoreOverrideCursor()
         for m, (to, ok, _err) in zip(chosen, results):
             if ok:
                 direct.mark_sent(self.win.db, self.cycle, m["code"], to)
@@ -572,15 +571,20 @@ class FollowPage(QWidget):
         if not paths:
             return
         from .. import day1
-        total, unknown, invalid = 0, [], []
-        for p in paths:
-            try:
-                entries = day1.read_rep_sheet(p)
-            except Exception as e:  # noqa: BLE001
-                error(self, f"تعذر قراءة {os.path.basename(p)}:\n{e}")
-                continue
-            a, u, bad = day1.apply_rep_sheet(self.win.db, self.cycle, entries)
-            total, unknown, invalid = total + a, unknown + u, invalid + bad
+        total, unknown, invalid, failed = 0, [], [], []
+        with Progress(self, "رفع ملفات حالة المطابقة") as bar:
+            for i, p in enumerate(paths):
+                bar(i, len(paths), os.path.basename(p))
+                try:
+                    entries = day1.read_rep_sheet(p)
+                except Exception as e:  # noqa: BLE001
+                    failed.append(f"{os.path.basename(p)}: {e}")
+                    continue
+                a, u, bad = day1.apply_rep_sheet(self.win.db, self.cycle, entries)
+                total, unknown, invalid = total + a, unknown + u, invalid + bad
+            bar(len(paths), len(paths))
+        if failed:
+            error(self, "تعذر قراءة:\n" + "\n".join(failed))
         self.refresh()
         msg = f"تم تحديث حالة المطابقة لـ {total} عميل."
         if unknown:
@@ -648,7 +652,9 @@ class FollowPage(QWidget):
         if not paths:
             return
         QSettings().setValue("last_dir", os.path.dirname(paths[0]))
-        matched, unknown = stages.attach_signed(self.win.db, self.win.folder, self.cycle, paths)
+        with Progress(self, "رفع الكشوف الموقعة") as bar:
+            matched, unknown = stages.attach_signed(self.win.db, self.win.folder, self.cycle, paths, bar)
+            bar(len(paths), len(paths))
         self.refresh()
         msg = f"تم تسجيل {len(matched)} عميل «مطابق»."
         if unknown:
@@ -668,14 +674,11 @@ class FollowPage(QWidget):
         db = self.win.db
         known = set(db.customers())
         lines = []
-        for p in paths:
+        for n, p in enumerate(paths, 1):
             try:
                 if p.lower().endswith(".pdf"):
-                    QApplication.setOverrideCursor(Qt.WaitCursor)
-                    try:
-                        recs, excluded = receipts.read_pdf(p, known)
-                    finally:
-                        QApplication.restoreOverrideCursor()
+                    with Progress(self, f"قراءة سندات القبض — ملف {n} من {len(paths)}: {os.path.basename(p)}") as bar:
+                        recs, excluded = receipts.read_pdf(p, known, bar)
                 else:
                     recs, excluded = self._read_excel(p, known)
                     if recs is None:
@@ -702,7 +705,10 @@ class FollowPage(QWidget):
     def _read_excel(self, path, known):
         from ..aging import read_table
         db = self.win.db
-        rows = read_table(path)
+        with Progress(self, "قراءة سندات القبض") as bar:
+            bar.step(10, os.path.basename(path))
+            rows = read_table(path)
+            bar.step(100, f"{len(rows)} سطر")
         saved = db.column_map("receipts")
         first, mapping = receipts.guess_columns(rows)
         if saved:
@@ -831,14 +837,13 @@ class FollowPage(QWidget):
         msgs = [(m["to"], m["subject"], m["body"], m["files"]) for m in dlg.selected()]
         if not msgs:
             return
-        QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            results = mailer.send_all(cfg, msgs)
+            with Progress(self, "إرسال الخطابات للمناديب") as bar:
+                bar.step(0, "الاتصال بخادم الإيميل")
+                results = mailer.send_all(cfg, msgs, lambda d, t: bar(d, t, "إيميل مرسل"))
         except Exception as e:  # noqa: BLE001
-            QApplication.restoreOverrideCursor()
             error(self, f"تعذر الاتصال بخادم الإيميل:\n{e}")
             return
-        QApplication.restoreOverrideCursor()
         ok = [r for r in results if r[1]]
         self.win.db.log("إرسال خطابات", f"{stage}: {len(ok)} من {len(results)}", cycle_id=self.cycle["id"])
         info(self, "\n".join(f"{'✔' if r[1] else '✖'} {r[0]}" + ("" if r[1] else f" — {r[2]}") for r in results))

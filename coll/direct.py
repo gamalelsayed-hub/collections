@@ -46,13 +46,15 @@ def state(c, days):
     return "لم يصدر نموذج تحديث البيانات"
 
 
-def issue_forms(db, folder, cycle, codes, date_iso=None):
+def issue_forms(db, folder, cycle, codes, date_iso=None, progress=None):
     """Data update form (SL-26-1005) per customer, grouped by rep (one printable PDF and one ZIP per rep)."""
     date_iso = date_iso or date.today().isoformat()
     masters = db.customers()
     base = folder.files_dir(cycle["month"], "letters")
     by_rep = {}
-    for code in codes:
+    for i, code in enumerate(codes):
+        if progress:
+            progress(i, len(codes), code)
         c = db.cycle_customer(cycle["id"], code)
         cust = dict(masters.get(code, {}))
         cust.update(code=code, name=c["name"] or cust.get("name", ""), rep_name=c["rep_name"])

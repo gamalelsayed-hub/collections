@@ -49,14 +49,17 @@ def is_customer_line(account, code, known_codes=None):
     return (account or "").startswith(CUSTOMER_ACCOUNT)
 
 
-def read_pdf(path, known_codes=None):
-    """Return (customer receipts, excluded internal/other lines count)."""
+def read_pdf(path, known_codes=None, progress=None):
+    """Return (customer receipts, excluded internal/other lines count). progress(done, total, text) per page."""
     import pdfplumber
 
     from .pdfrepair import readable
     out, excluded = [], 0
     with pdfplumber.open(readable(path)) as pdf:
-        for page in pdf.pages:
+        n = len(pdf.pages)
+        for i, page in enumerate(pdf.pages):
+            if progress:
+                progress(i, n, f"صفحة {i + 1}")
             rows = {}
             for w in page.extract_words():
                 rows.setdefault(round(w["top"] / 4), []).append(w)

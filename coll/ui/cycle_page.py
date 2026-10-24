@@ -212,7 +212,10 @@ class CyclePage(QWidget):
             return
         QSettings().setValue("last_dir", os.path.dirname(path))
         try:
-            rows = aging.read_table(path)
+            with Progress(self, "رفع تقرير الأعمار") as bar:
+                bar.step(10, f"قراءة {os.path.basename(path)}")
+                rows = aging.read_table(path)
+                bar.step(100, f"تمت القراءة: {len(rows)} سطر")
         except Exception as e:  # noqa: BLE001
             error(self, f"تعذر قراءة الملف:\n{e}")
             return
@@ -238,11 +241,16 @@ class CyclePage(QWidget):
         if db.cycle(month) and not ask(self, f"دورة {month_label(month)} موجودة. استبدال تقرير الأعمار؟ "
                                              "(الكشوف المرفوعة تبقى)"):
             return
-        grouped = aging.group_customers(recs, db.setting_num("custody_days"), db.setting_num("credit_days"),
-                                        db.setting_num("min_overdue"), db.setting_num("max_customers"),
-                                        self.skip_rules(month))
-        new, moved = db.upsert_from_aging(recs)
-        db.create_cycle(month, os.path.basename(path), date.today().isoformat(), grouped)
+        with Progress(self, f"تجهيز دورة {month_label(month)}") as bar:
+            bar.step(20, f"حساب المتأخر وتحديد المطلوب مطابقتهم ({len(recs)} عميل)")
+            grouped = aging.group_customers(recs, db.setting_num("custody_days"), db.setting_num("credit_days"),
+                                            db.setting_num("min_overdue"), db.setting_num("max_customers"),
+                                            self.skip_rules(month))
+            bar.step(50, "تحديث بيانات العملاء")
+            new, moved = db.upsert_from_aging(recs)
+            bar.step(80, "حفظ الدورة")
+            db.create_cycle(month, os.path.basename(path), date.today().isoformat(), grouped)
+            bar.step(100, "تم")
         req = [g for g in grouped if g["required"]]
         db.log("رفع تقرير الأعمار", f"{os.path.basename(path)}: {len(grouped)} عميل، {len(req)} مطلوب مطابقة",
                cycle_id=db.cycle(month)["id"])
@@ -410,7 +418,9 @@ class CyclePage(QWidget):
             return
         dest = QFileDialog.getExistingDirectory(self, "حفظ الملفات المضغوطة في", os.path.expanduser("~"))
         if dest:
-            day1.export_all(self.packages, dest)
+            with Progress(self, "تنزيل الملفات المضغوطة") as bar:
+                day1.export_all(self.packages, dest, bar)
+                bar(len(self.packages), len(self.packages))
             QDesktopServices.openUrl(QUrl.fromLocalFile(dest))
 
     def open_folder(self):
@@ -443,14 +453,13 @@ class CyclePage(QWidget):
             return
         sendable = [m["package"] for m in chosen]
         msgs = [(m["to"], m["subject"], m["body"], m["files"]) for m in chosen]
-        QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            results = mailer.send_all(cfg, msgs)
+            with Progress(self, "إرسال الكشوف للمناديب") as bar:
+                bar.step(0, "الاتصال بخادم الإيميل")
+                results = mailer.send_all(cfg, msgs, lambda d, t: bar(d, t, "إيميل مرسل"))
         except Exception as e:  # noqa: BLE001
-            QApplication.restoreOverrideCursor()
             error(self, f"تعذر الاتصال بخادم الإيميل:\n{e}\n\nراجع إعدادات الإيميل، أو استخدم «تنزيل الكل».")
             return
-        QApplication.restoreOverrideCursor()
         ok = {to for to, good, _ in results if good}
         for p in sendable:
             if p["email"] in ok:

@@ -87,13 +87,15 @@ def refresh_status(db, cycle, codes=None):
 CODE_IN_NAME = re.compile(r"(?<!\d)(\d{6,10})(?!\d)")
 
 
-def attach_signed(db, folder, cycle, paths):
+def attach_signed(db, folder, cycle, paths, progress=None):
     """Signed statements named with the customer number (e.g. "18010274.pdf" or "18010274 - name.jpg").
     Returns (matched [(code, name)], unknown files)."""
     cust = {c["code"]: c for c in db.cycle_customers(cycle["id"])}
     dest = folder.files_dir(cycle["month"], "signed")
     matched, unknown = [], []
-    for p in paths:
+    for i, p in enumerate(paths):
+        if progress:
+            progress(i, len(paths), os.path.basename(p))
         m = next((x for x in CODE_IN_NAME.findall(os.path.basename(p)) if x in cust), None)
         if not m:
             unknown.append(os.path.basename(p))

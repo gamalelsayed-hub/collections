@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
 
 from .. import attachments as A
 from .. import reps as R
-from .widgets import NAVY, ask, error, info, money, month_label, ro, styled_table, warn
+from .widgets import NAVY, Progress, ask, error, info, money, month_label, ro, styled_table, warn
 
 
 # ================================================================== customers
@@ -152,8 +152,11 @@ class CustomerDialog(QDialog):
             return
         QSettings().setValue("attach_dir", os.path.dirname(paths[0]))
         try:
-            for p in paths:
-                A.add(self.win.db, self.win.folder, self.c["code"], self.file_kind.currentData(), p)
+            with Progress(self, f"إرفاق: {self.file_kind.currentText()}") as bar:
+                for i, p in enumerate(paths):
+                    bar(i, len(paths), os.path.basename(p))
+                    A.add(self.win.db, self.win.folder, self.c["code"], self.file_kind.currentData(), p)
+                bar(len(paths), len(paths))
         except OSError as e:
             error(self, f"تعذر نسخ الملف:\n{e}")
         self.fill_files()
@@ -286,10 +289,14 @@ class CustomersPage(QWidget):
                                               "Excel (*.xlsx *.xlsm)")
         if not path:
             return
-        rows = read_table(path)
+        with Progress(self, "استيراد بيانات العملاء") as bar:
+            bar.step(10, f"قراءة {os.path.basename(path)}")
+            rows = read_table(path)
         heads = {"code": ("رقم العميل", "كود العميل"), "name": ("اسم العميل",), "rep_name": ("المندوب",),
                  "branch": ("الفرع",), "region": ("المنطقة",), "ctype": ("نوع العميل", "النوع"),
-                 "cr_no": ("السجل",), "phone": ("الجوال", "الهاتف"), "email": ("الإيميل", "الايميل", "البريد"),
+                 "cr_no": ("السجل",), "vat_no": ("الرقم الضريبي", "الضريبي"), "address": ("العنوان",),
+                 "phone2": ("الهاتف 2", "هاتف 2", "جوال 2"), "phone": ("الجوال", "الهاتف"),
+                 "email": ("الإيميل", "الايميل", "البريد"),
                  "pn_no": ("رقم السند",), "pn_value": ("قيمة السند",), "pn_date": ("تاريخ السند",),
                  "has_pn": ("سند لأمر", "سند لامر", "سند امر")}
         cols, first = {}, None
@@ -313,7 +320,11 @@ class CustomersPage(QWidget):
 
         def text(v):
             return code_text(v) if isinstance(v, (int, float)) else str(v).strip()
-        for r in rows[first:]:
+        bar = Progress(self, "استيراد بيانات العملاء")
+        data = rows[first:]
+        for i, r in enumerate(data):
+            if i % 25 == 0:
+                bar(i, len(data), "حفظ العملاء")
             code = code_text(r[cols["code"]])
             if not code or not any(ch.isdigit() for ch in code):
                 continue
@@ -345,6 +356,7 @@ class CustomersPage(QWidget):
             existing[code] = c
             db.save_customer(c)
             seen[code] = c
+        bar.close()
         n = len(seen)
         pn = sum(1 for c in seen.values() if c.get("has_pn"))
         db.log("استيراد بيانات العملاء", f"{os.path.basename(path)}: {n} عميل، {added} جديد")
