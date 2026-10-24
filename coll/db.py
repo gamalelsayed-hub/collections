@@ -36,6 +36,9 @@ CREATE TABLE IF NOT EXISTS templates(kind TEXT PRIMARY KEY, html TEXT, serial_fo
 CREATE TABLE IF NOT EXISTS receipts(
     cycle_id INTEGER, voucher TEXT, date TEXT, code TEXT, name TEXT, account TEXT, amount REAL, source TEXT,
     uploaded TEXT, PRIMARY KEY(cycle_id, voucher, code, amount));
+CREATE TABLE IF NOT EXISTS customer_files(
+    id INTEGER PRIMARY KEY, code TEXT, kind TEXT, name TEXT, path TEXT, uploaded TEXT, user TEXT);
+CREATE INDEX IF NOT EXISTS customer_files_code ON customer_files(code);
 CREATE TABLE IF NOT EXISTS negotiations(
     id INTEGER PRIMARY KEY, code TEXT, cycle_id INTEGER, created TEXT, amount REAL, data TEXT,
     status TEXT DEFAULT 'جاري', serial TEXT DEFAULT '', pdf TEXT DEFAULT '', user TEXT, closed TEXT DEFAULT '',
@@ -61,6 +64,16 @@ MIGRATIONS = [
     ("customers", "perm_reason", "TEXT DEFAULT ''"),          # Day 1 of the collection period (receipts count from it)
     ("letters", "rep_name", "TEXT DEFAULT ''"),
     ("letters", "cancel_reason", "TEXT DEFAULT ''"),
+    ("cycle_customers", "stop_letters", "INTEGER DEFAULT 0"),   # matched: decided not to continue the letters
+    ("cycle_customers", "stop_reason", "TEXT DEFAULT ''"),
+    ("cycle_customers", "match_reason", "TEXT DEFAULT ''"),     # why not matched / «لم يرد» / silent acceptance
+    ("cycle_customers", "upd_serial", "TEXT DEFAULT ''"),       # data update form issued
+    ("cycle_customers", "upd_date", "TEXT DEFAULT ''"),
+    ("cycle_customers", "direct_sent", "TEXT DEFAULT ''"),      # statement sent to the customer's own e-mail
+    ("cycle_customers", "direct_to", "TEXT DEFAULT ''"),
+    ("customers", "vat_no", "TEXT DEFAULT ''"),
+    ("customers", "address", "TEXT DEFAULT ''"),          # short national address
+    ("customers", "phone2", "TEXT DEFAULT ''"),
 ]
 EXTRA_CYCLE_FIELDS = ["matched", "signed", "paid", "pct", "excluded", "exclude_reason", "level", "pn_letter", "carried"]
 
@@ -94,7 +107,16 @@ DEFAULTS = {
     "contact_mobile": "",
     "contact_email": "",
     "letter_footer": "",
+    "letterhead_top": "55",         # letter paper image: text starts below its header (mm)
+    "letterhead_bottom": "34",      # ... and ends above its footer (mm)
     "letter_unmatched": "0",
+    "confirm_days": "7",            # direct confirmation: no reply within these days = accepted (matched)
+    "direct_subject": "مصادقة رصيد حسابكم لدى {company} — {month}",
+    "direct_body": ("السادة / {name} المحترمين،\n\nالسلام عليكم ورحمة الله وبركاته،\n\nمرفق كشف حسابكم لدينا "
+                    "(رقم العميل {code}) والرصيد المستحق {balance} ريال سعودي.\nنرجو مراجعة الكشف وإفادتنا "
+                    "بالموافقة أو بأي ملاحظات بالرد على هذا البريد.\n\nوفي حال عدم الرد خلال {days} أيام من تاريخ "
+                    "هذا البريد (حتى {deadline}) يُعتبر ذلك موافقة منكم على صحة الرصيد ومصادقةً عليه.\n\n"
+                    "مع الشكر،\nالإدارة المالية — قسم التحصيل والائتمان"),
     "mail_subject": "كشوف حسابات العملاء المطلوب مطابقتهم — {month}",
     "mail_body": ("الأستاذ/ {rep} المحترم،\n\nمرفق كشوف حسابات عملائك المطلوب مطابقتهم لشهر {month} "
                   "({count} عميل).\nنرجو مطابقتها مع العملاء وإعادتها موقعة ومختومة.\n\nمع الشكر،\n"
@@ -104,7 +126,8 @@ DEFAULTS = {
 CYCLE_FIELDS = ["code", "name", "rep_name", "types", "balance", "overdue", "b0", "b1", "b2", "b3", "b4", "required",
                 "status", "statement", "stmt_balance", "stmt_detail", "warning"]
 CUSTOMER_FIELDS = ["code", "name", "cr_no", "phone", "email", "region", "branch", "rep_name", "ctype", "cls",
-                   "has_pn", "pn_no", "pn_value", "pn_date", "notes", "perm_exclude", "perm_reason"]
+                   "has_pn", "pn_no", "pn_value", "pn_date", "notes", "perm_exclude", "perm_reason", "vat_no",
+                   "address", "phone2"]
 
 
 def now():
@@ -503,4 +526,21 @@ class DB:
 
     def close_negotiation(self, nid, status, note=""):
         self.con.execute("UPDATE negotiations SET status=?, closed=?, note=? WHERE id=?", (status, now(), note, nid))
+        self.con.commit()
+
+    # ---------------- customer attachments (files copied into the data folder)
+    def customer_files(self, code=None):
+        q, args = "SELECT * FROM customer_files", ()
+        if code:
+            q, args = q + " WHERE code=?", (code,)
+        return [dict(r) for r in self.con.execute(q + " ORDER BY id DESC", args)]
+
+    def add_customer_file(self, code, kind, name, path):
+        cur = self.con.execute("INSERT INTO customer_files(code, kind, name, path, uploaded, user) VALUES(?,?,?,?,?,?)",
+                               (code, kind, name, path, now(), self.user))
+        self.con.commit()
+        return cur.lastrowid
+
+    def delete_customer_file(self, fid):
+        self.con.execute("DELETE FROM customer_files WHERE id=?", (fid,))
         self.con.commit()

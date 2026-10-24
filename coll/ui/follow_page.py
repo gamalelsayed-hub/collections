@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDate
                                QLabel, QLineEdit, QMenu, QPushButton, QTableWidgetItem, QVBoxLayout,
                                QWidget)
 
-from .. import mailer, receipts, stages
+from .. import direct, mailer, receipts, stages
 from .cycle_page import step_box
 from .mail_preview import MailPreviewDialog
 from .widgets import (NAVY, ColumnMapDialog, Progress, ask, color_item, error, info, money, month_label, ro, styled_table,
@@ -116,6 +116,10 @@ class FollowPage(QWidget):
         b = QPushButton("📥 رفع الكشوف الموقعة")
         b.clicked.connect(self.upload_signed)
         v1.addWidget(b)
+        b = QPushButton("📥 رفع ملف حالة المطابقة من المندوب")
+        b.setToolTip("ملف «قائمة العملاء» اللي في الملف المضغوط بعد ما يعبّي المندوب عمود حالة المطابقة والسبب")
+        b.clicked.connect(self.upload_rep_sheet)
+        v1.addWidget(b)
         v1.addStretch()
         b2, v2 = step_box("٢) سندات القبض")
         self.rec_info = QLabel("ارفع تقرير سندات القبض من النظام (PDF أو Excel). يُحسب فقط ما له رقم عميل في "
@@ -169,7 +173,19 @@ class FollowPage(QWidget):
             grid.addWidget(b, i // 2, i % 2)
         v3.addLayout(grid)
         v3.addStretch()
-        for b in (b1, b2, b3):
+        b4, v4 = step_box("٤) تحديث البيانات والمصادقة المباشرة")
+        d_info = QLabel("لمن لم يطابق ولم يسدد النسبة: نموذج تحديث بيانات للحصول على إيميل العميل الرسمي موقعًا، ثم "
+                        "إرسال الكشف للعميل مباشرة؛ عدم الرد خلال المهلة = مطابق.")
+        d_info.setWordWrap(True)
+        v4.addWidget(d_info)
+        for text, fn in (("📋 عرض العملاء", lambda: self.view.setCurrentIndex(2)),
+                         ("🖨 إصدار نموذج تحديث البيانات للمحددين", self.issue_update_forms),
+                         ("📧 إرسال المصادقة للعملاء المحددين مباشرة", self.send_direct)):
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            v4.addWidget(b)
+        v4.addStretch()
+        for b in (b1, b2, b3, b4):
             steps.addWidget(b, 1)
         lay.addLayout(steps)
 
@@ -178,7 +194,8 @@ class FollowPage(QWidget):
         self.search.setPlaceholderText("بحث بالاسم أو الرقم...")
         self.search.textChanged.connect(self.fill)
         self.view = QComboBox()
-        self.view.addItems(["المرشحون للمرحلة المختارة", "كل العملاء المطلوب مطابقتهم"])
+        self.view.addItems(["المرشحون للمرحلة المختارة", "كل العملاء المطلوب مطابقتهم",
+                            "تحديث البيانات والمصادقة المباشرة (غير مطابق ولم يسدد)"])
         self.view.currentIndexChanged.connect(self.refresh)
         self.f_rep = QComboBox()
         self.f_rep.currentIndexChanged.connect(self.fill)
@@ -272,8 +289,21 @@ class FollowPage(QWidget):
             self.letter_info.setText("ابدأ الدورة من شاشة «الدورة الشهرية».")
             self.fill()
             return
+        accepted = direct.apply_silent_acceptance(db, self.cycle)
+        if accepted:
+            info(self, f"اعتُبر {len(accepted)} عميل مطابقًا لعدم الرد على المصادقة المباشرة خلال "
+                       f"{int(db.setting_num('confirm_days'))} أيام:\n" +
+                 "\n".join(f"{c} — {n}" for c, n in accepted[:20]))
         key = self.stage_key()
-        if self.view.currentIndex() == 0:
+        if self.view.currentIndex() == 2:
+            self.rows = []
+            for c in direct.candidates(db, self.cycle):
+                r = dict(c)
+                r.update(eligible=not c["upd_serial"] and not c["direct_sent"] and c["matched"] is None, kind="",
+                         amount=stages.remaining(c, db.setting("letter_amount")),
+                         reason=c["state"] + ("" if c["email"] else " — لا يوجد إيميل للعميل"))
+                self.rows.append(r)
+        elif self.view.currentIndex() == 0:
             self.rows = stages.candidates(db, self.cycle, key)
             for r in self.rows:
                 k = self.kind_override.get((self.cycle["id"], r["code"]))
@@ -310,7 +340,9 @@ class FollowPage(QWidget):
         self.letter_info.setText(
             f"{name}: {len(eligible)} عميل مرشح بمبلغ {money(sum(r['amount'] for r in eligible))}. "
             f"نسبة الإعفاء في هذه المرحلة: {stages.threshold(db, key) * 100:.0f}% من المتأخر يوم 1." if self.view.currentIndex() == 0
-            else "عرض كل العملاء — اختر «المرشحون» لإصدار الخطابات.")
+            else "عرض كل العملاء — اختر «المرشحون» لإصدار الخطابات." if self.view.currentIndex() == 1
+            else f"{len(self.rows)} عميل غير مطابق ولم يسدد. المحدد تلقائيًا: من لم يصدر له نموذج بعد. "
+                 "لإرسال المصادقة مباشرة حدد العملاء اللي عندهم إيميل في بطاقة العميل.")
         self.fill()
 
     def visible_rows(self):
@@ -331,9 +363,10 @@ class FollowPage(QWidget):
         t.blockSignals(True)
         t.setRowCount(len(rows))
         candidates_view = self.view.currentIndex() == 0
+        checkable = self.view.currentIndex() in (0, 2)
         for i, r in enumerate(rows):
             chk = QTableWidgetItem()
-            if candidates_view:
+            if checkable:
                 chk.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
                 chk.setCheckState(Qt.Checked if r["eligible"] else Qt.Unchecked)
             else:
@@ -347,7 +380,11 @@ class FollowPage(QWidget):
             it = ro(pct_text(r["pct"]), True)
             color_item(it, "#067647" if (r["pct"] or 0) >= stages.threshold(self.win.db, self.stage_key()) else "#b42318")
             t.setItem(i, 6, it)
-            t.setItem(i, 7, ro({1: "✔ مطابق", 0: "✖ غير مطابق"}.get(r["matched"], "—")))
+            mt = ro({1: "✔ مطابق", 0: "✖ غير مطابق"}.get(r["matched"], "لم يرد" if (r.get("match_reason") or "")
+                                                            .startswith("لم يرد") else "—"))
+            if r.get("match_reason"):
+                mt.setToolTip(r["match_reason"])
+            t.setItem(i, 7, mt)
             it = ro(r["status"])
             color_item(it, STATUS_COLORS.get(r["status"], "#344054"))
             t.setItem(i, 8, it)
@@ -406,8 +443,14 @@ class FollowPage(QWidget):
             return
         r = self._row_at(idx.row())
         m = QMenu(self)
-        acts = [("✔ مطابق", lambda: self._match(r, 1)), ("✖ غير مطابق", lambda: self._match(r, 0)),
-                ("📎 إرفاق كشف موقع لهذا العميل", lambda: self._attach_one(r)), None]
+        acts = [("✔ مطابق", lambda: self._match(r, 1)), ("✖ غير مطابق (مع السبب)", lambda: self._match(r, 0)),
+                ("📎 إرفاق كشف موقع لهذا العميل", lambda: self._attach_one(r))]
+        if r["matched"] == 1:
+            if r.get("stop_letters"):
+                acts.append(("▶ استكمال مراحل الخطابات لهذا العميل المطابق", lambda: self._stop(r, False)))
+            else:
+                acts.append(("⏸ عدم استكمال الخطابات لهذا العميل المطابق (حتى لو لم يسدد)", lambda: self._stop(r, True)))
+        acts.append(None)
         if r["excluded"]:
             acts.append(("↩ إلغاء الاستبعاد", lambda: self._include(r)))
         else:
@@ -427,9 +470,124 @@ class FollowPage(QWidget):
         m.exec(self.table.viewport().mapToGlobal(pos))
 
     def _match(self, r, value):
-        if self.win.can_edit():
-            stages.set_matched(self.win.db, self.cycle, r["code"], value)
-            self.refresh()
+        if not self.win.can_edit():
+            return
+        note = ""
+        if value == 0:
+            note, ok = QInputDialog.getText(self, "غير مطابق", f"سبب عدم المطابقة — {r['name']}:")
+            if not ok:
+                return
+        stages.set_matched(self.win.db, self.cycle, r["code"], value, note.strip())
+        self.refresh()
+
+    def _stop(self, r, stop):
+        if not self.win.can_edit():
+            return
+        reason = ""
+        if stop:
+            reason, ok = QInputDialog.getText(self, "عدم استكمال الخطابات", f"السبب (اختياري) — {r['name']}:")
+            if not ok:
+                return
+        stages.set_stop_letters(self.win.db, self.cycle, r["code"], stop, reason.strip())
+        self.refresh()
+
+    # ---------------------------------------------------------------- data update & direct confirmation
+    def _checked_codes(self):
+        return [self._row_at(i)["code"] for i in range(self.table.rowCount())
+                if self.table.item(i, 0).checkState() == Qt.Checked]
+
+    def issue_update_forms(self):
+        if not self.win.can_edit() or not self.cycle:
+            return
+        if self.view.currentIndex() != 2:
+            self.view.setCurrentIndex(2)
+            info(self, "حدد العملاء من القائمة ثم اضغط الإصدار مرة ثانية.")
+            return
+        codes = self._checked_codes()
+        if not codes:
+            warn(self, "حدد العملاء أولًا.")
+            return
+        if not ask(self, f"إصدار نموذج تحديث البيانات لـ {len(codes)} عميل؟"):
+            return
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            pk = direct.issue_forms(self.win.db, self.win.folder, self.cycle, codes,
+                                    self.date.date().toString("yyyy-MM-dd"))
+        except Exception as e:  # noqa: BLE001
+            QApplication.restoreOverrideCursor()
+            error(self, f"تعذر إصدار النماذج:\n{e}")
+            return
+        QApplication.restoreOverrideCursor()
+        self.packages = pk
+        self.refresh()
+        self.packages = pk     # refresh() clears them; keep them for «إرسال الخطابات للمناديب»
+        info(self, f"صدر {sum(len(p['letters']) for p in pk)} نموذج في {len(pk)} ملف مضغوط (ملف لكل مندوب).\n"
+                   "تقدر ترسلها للمناديب من زر «✉ إرسال الخطابات للمناديب»، أو تفتح فولدر الخطابات.\n"
+                   "بعد ما يرجع النموذج موقعًا: أرفقه في بطاقة العميل (المرفقات) واكتب إيميله الرسمي.")
+
+    def send_direct(self):
+        if not self.win.can_edit() or not self.cycle:
+            return
+        if self.view.currentIndex() != 2:
+            self.view.setCurrentIndex(2)
+            info(self, "حدد العملاء اللي عندهم إيميل ثم اضغط الإرسال مرة ثانية.")
+            return
+        codes = self._checked_codes()
+        if not codes:
+            warn(self, "حدد العملاء أولًا.")
+            return
+        cfg = self.win.mail_config()
+        if not cfg:
+            warn(self, "اضبط إعدادات الإيميل أولًا من شاشة الإعدادات.")
+            return
+        mails, problems = direct.mails(self.win.db, self.win.folder, self.cycle, codes)
+        if problems:
+            warn(self, "لن يُرسل لهؤلاء:\n" + "\n".join(problems[:25]))
+        if not mails:
+            return
+        dlg = MailPreviewDialog(self, mails, cfg.get("cc", ""), "مراجعة إيميلات المصادقة المباشرة قبل الإرسال")
+        if dlg.exec() != QDialog.Accepted:
+            return
+        chosen = dlg.selected()
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            results = mailer.send_all(cfg, [(m["to"], m["subject"], m["body"], m["files"]) for m in chosen])
+        except Exception as e:  # noqa: BLE001
+            QApplication.restoreOverrideCursor()
+            error(self, f"تعذر الاتصال بخادم الإيميل:\n{e}")
+            return
+        QApplication.restoreOverrideCursor()
+        for m, (to, ok, _err) in zip(chosen, results):
+            if ok:
+                direct.mark_sent(self.win.db, self.cycle, m["code"], to)
+        self.refresh()
+        info(self, "\n".join(f"{'✔' if r[1] else '✖'} {r[0]}" + ("" if r[1] else f" — {r[2]}") for r in results)
+             + f"\n\nمن لا يرد خلال {int(self.win.db.setting_num('confirm_days'))} أيام يُعتبر مطابقًا تلقائيًا.")
+
+    def upload_rep_sheet(self):
+        if not self.win.can_edit() or not self.cycle:
+            return
+        paths, _ = QFileDialog.getOpenFileNames(self, "ملفات حالة المطابقة من المناديب",
+                                                QSettings().value("last_dir", os.path.expanduser("~")), "Excel (*.xlsx)")
+        if not paths:
+            return
+        from .. import day1
+        total, unknown, invalid = 0, [], []
+        for p in paths:
+            try:
+                entries = day1.read_rep_sheet(p)
+            except Exception as e:  # noqa: BLE001
+                error(self, f"تعذر قراءة {os.path.basename(p)}:\n{e}")
+                continue
+            a, u, bad = day1.apply_rep_sheet(self.win.db, self.cycle, entries)
+            total, unknown, invalid = total + a, unknown + u, invalid + bad
+        self.refresh()
+        msg = f"تم تحديث حالة المطابقة لـ {total} عميل."
+        if unknown:
+            msg += f"\n⚠ {len(unknown)} رقم عميل غير موجود في الدورة: " + "، ".join(unknown[:10])
+        if invalid:
+            msg += "\n⚠ حالة غير معروفة (المسموح: مطابق / غير مطابق / لم يرد): " + "، ".join(invalid[:10])
+        info(self, msg)
 
     def _attach_one(self, r):
         if not self.win.can_edit():
@@ -658,10 +816,13 @@ class FollowPage(QWidget):
             warn(self, "اضبط إعدادات الإيميل أولًا من شاشة الإعدادات، أو أرسل الملفات يدويًا من فولدر الخطابات.")
             return
         month = month_label(self.cycle["month"])
-        stage = self.stage.currentText()
+        forms = all(l["kind"] == "UPD" for p in self.packages for l in p["letters"])
+        stage = "نموذج تحديث بيانات العميل" if forms else self.stage.currentText()
+        ask_for = ("نرجو تسليمها للعملاء لتعبئتها (وخاصة الإيميل الرسمي) وتوقيعها وختمها، وإعادتها لنا."
+                   if forms else "نرجو تسليمها للعملاء ومتابعة السداد.")
         mails = [{"rep": p["rep"], "to": p["email"], "subject": f"{stage} — عملاء {p['rep']} — {month}",
                   "body": (f"الأستاذ/ {p['rep']} المحترم،\n\nمرفق {stage} لعملائك ({len(p['letters'])} عميل) لشهر "
-                           f"{month}.\nنرجو تسليمها للعملاء ومتابعة السداد.\n\nمع الشكر،\n"
+                           f"{month}.\n{ask_for}\n\nمع الشكر،\n"
                            "الإدارة المالية — قسم التحصيل والائتمان"),
                   "files": [p["zip"]], "count": f"{len(p['letters'])} خطاب"} for p in self.packages]
         dlg = MailPreviewDialog(self, mails, cfg.get("cc", ""), "مراجعة إيميلات الخطابات قبل الإرسال")

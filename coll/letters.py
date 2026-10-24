@@ -64,6 +64,9 @@ def letter_values(db, cust, amount, serial, date_iso, prev=None, extra=None):
         "جوال_التواصل": db.setting("contact_mobile") or "____________",
         "ايميل_التواصل": db.setting("contact_email") or "____________",
         "المحاسب": db.user,
+        "الرقم_الضريبي": cust.get("vat_no") or "", "العنوان_المختصر": cust.get("address") or "",
+        "الهاتف1": cust.get("phone") or "", "الهاتف2": cust.get("phone2") or "",
+        "البريد_الإلكتروني": cust.get("email") or "",
     }
     v.update(extra or {})
     return v
@@ -91,16 +94,25 @@ def make_rtl(doc):
 
 
 class Letterhead:
-    """Logo top-left, company name top-right, faded logo watermark, optional footer line."""
+    """Either the company's letterhead page (a full A4 image: header and footer as printed on the paper), or
+    the built-in layout: logo top-left, company name top-right, faded logo watermark, optional footer line.
+    top / bottom: where the letter text starts and ends (mm from the page edges)."""
 
-    def __init__(self, company, logo=None, footer="", watermark=True):
+    def __init__(self, company, logo=None, footer="", watermark=True, page=None, top=46, bottom=24):
         self.company = company
         self.footer = footer
         self.watermark = watermark
+        self.page = QImage(page) if page and os.path.exists(page) else None
+        if self.page is not None and self.page.isNull():
+            self.page = None
+        self.top, self.bottom = (top, bottom) if self.page is not None else (46, 24)
         path = logo if logo and os.path.exists(logo) else os.path.join(RES, "logo.png")
         self.logo = QImage(path)
 
     def paint(self, p, page_w, page_h):
+        if self.page is not None:
+            p.drawImage(QRectF(0, 0, page_w, page_h), self.page)
+            return
         if not self.logo.isNull():
             if self.watermark:
                 w = 150 * MM
@@ -125,6 +137,30 @@ class Letterhead:
             p.drawText(QRectF(16 * MM, page_h - 15 * MM, page_w - 32 * MM, 10 * MM), int(Qt.AlignCenter), self.footer)
 
 
+def page_image(path, dpi=200):
+    """The company's letter paper as a full A4 image (white background): first page of a PDF, or a picture."""
+    from PySide6.QtCore import QSize
+    size = QSize(round(210 / 25.4 * dpi), round(297 / 25.4 * dpi))
+    if path.lower().endswith(".pdf"):
+        from PySide6.QtPdf import QPdfDocument
+        doc = QPdfDocument()
+        doc.load(path)
+        if doc.pageCount() < 1:
+            return QImage()
+        src = doc.render(0, size)
+        doc.close()
+    else:
+        src = QImage(path)
+    if src.isNull():
+        return src
+    out = QImage(size, QImage.Format_RGB32)
+    out.fill(Qt.white)
+    p = QPainter(out)
+    p.drawImage(QRectF(0, 0, size.width(), size.height()), src)
+    p.end()
+    return out
+
+
 def write_pdf(pages_html, out_path, letterhead, title=""):
     """pages_html: list of merged HTML documents; each starts on a new page."""
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
@@ -133,7 +169,7 @@ def write_pdf(pages_html, out_path, letterhead, title=""):
     writer.setTitle(title)
     writer.setPageLayout(QPageLayout(QPageSize(QPageSize.A4), QPageLayout.Portrait, QMarginsF(0, 0, 0, 0)))
     page_w, page_h = 210 * MM, 297 * MM
-    top, bottom, side = 46 * MM, 24 * MM, 20 * MM
+    top, bottom, side = letterhead.top * MM, letterhead.bottom * MM, 20 * MM
     box_w, box_h = page_w - 2 * side, page_h - top - bottom
     p = QPainter(writer)
     first = True
@@ -150,15 +186,28 @@ def write_pdf(pages_html, out_path, letterhead, title=""):
             doc.setDefaultTextOption(opt)
             doc.setHtml(f'<html><body dir="rtl">{body}</body></html>')
             make_rtl(doc)
+            # a letter that just spills onto a second page is scaled down (to 85% at most) to stay on one page
+            scale = 1.0
             doc.setPageSize(QSizeF(box_w, box_h))
+            if doc.pageCount() > 1:
+                for s in (0.95, 0.9, 0.85):
+                    doc.setPageSize(QSizeF(box_w / s, box_h / s))
+                    if doc.pageCount() == 1:
+                        scale = s
+                        break
+                else:
+                    doc.setPageSize(QSizeF(box_w, box_h))
+            w, h = box_w / scale, box_h / scale
             for i in range(max(1, doc.pageCount())):
                 if not first:
                     writer.newPage()
                 first = False
                 letterhead.paint(p, page_w, page_h)
                 p.save()
-                p.translate(side, top - i * box_h)
-                doc.drawContents(p, QRectF(0, i * box_h, box_w, box_h))
+                p.translate(side, top)
+                p.scale(scale, scale)
+                p.translate(0, -i * h)
+                doc.drawContents(p, QRectF(0, i * h, w, h))
                 p.restore()
     finally:
         p.end()

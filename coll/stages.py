@@ -23,7 +23,7 @@ STAGES = {
 LEVEL_OF_KIND = {"1003": 1, "1004": 2, "1004PN": 2, "FD": 3, "1005": 3, "1006": 3}   # 1005/1006: old letters
 KIND_NAMES = {"1003": "خطاب مالي", "1004": "خطاب قانوني", "1004PN": "خطاب قانوني (سند لأمر)",
               "FD": "التوجيه النهائي", "1005": "إحالة السند للتنفيذ", "1006": "إنذار دعوى",
-              "1002": "اتفاقية تسوية"}
+              "1002": "اتفاقية تسوية", "UPD": "نموذج تحديث بيانات"}
 DAY1_STATUSES = ("", "مطلوب مطابقة", "كشف ناقص", "كشف جاهز", "اترسل كشف")
 
 
@@ -62,9 +62,11 @@ def derive_status(c, thr, negotiating):
     if level == 1:
         return "خطاب مالي"
     if c.get("matched") == 1:
-        return "مطابق"
+        return "مطابق — بدون خطابات" if c.get("stop_letters") else "مطابق"
     if c.get("matched") == 0:
         return "غير مطابق"
+    if c.get("direct_sent"):
+        return "مصادقة مباشرة — بانتظار رد العميل"
     if c.get("status") in DAY1_STATUSES:
         return c["status"]
     return "اترسل كشف" if c.get("statement") else "مطلوب مطابقة"
@@ -118,9 +120,20 @@ def attach_signed_to(db, folder, cycle, code, path, dest=None):
 
 
 def set_matched(db, cycle, code, value, note=""):
-    db.update_cycle_customer(cycle["id"], code, matched=value)
+    fields = {"matched": value, "match_reason": note if value != 1 else ""}
+    if value != 1:
+        fields["stop_letters"] = 0
+    db.update_cycle_customer(cycle["id"], code, **fields)
     db.log("مطابقة", {1: "مطابق", 0: "غير مطابق", None: "إلغاء"}[value] + (f" — {note}" if note else ""),
            code=code, cycle_id=cycle["id"])
+    refresh_status(db, cycle, {code})
+
+
+def set_stop_letters(db, cycle, code, stop, reason=""):
+    """Matched customer: continue the letters stages (stop=False) or not, even if he has not paid."""
+    db.update_cycle_customer(cycle["id"], code, stop_letters=1 if stop else 0, stop_reason=reason if stop else "")
+    db.log("قرار الخطابات", ("عدم استكمال الخطابات" + (f" — {reason}" if reason else "")) if stop else
+           "استكمال الخطابات", code=code, cycle_id=cycle["id"])
     refresh_status(db, cycle, {code})
 
 
@@ -254,6 +267,9 @@ def candidates(db, cycle, stage):
             eligible, reasons = False, [f"استثناء دائم: {m.get('perm_reason') or ''}"]
         elif c["excluded"]:
             eligible, reasons = False, [f"مستبعد: {c['exclude_reason']}"]
+        elif c["matched"] == 1 and c["stop_letters"]:
+            eligible, reasons = False, ["مطابق — تقرر عدم استكمال الخطابات" +
+                                        (f": {c['stop_reason']}" if c["stop_reason"] else "")]
         elif pct >= thr:
             if stage == "finance" and unmatched_rule and c["matched"] != 1:
                 reasons = [f"سدد {pct * 100:.0f}% لكن لم يطابق"]
@@ -281,7 +297,12 @@ def candidates(db, cycle, stage):
 
 
 def letterhead(db, folder):
-    return L.Letterhead(db.setting("company"), folder.asset("logo.png"), db.setting("letter_footer"))
+    return L.Letterhead(db.setting("company"), folder.asset("logo.png"), db.setting("letter_footer"),
+                        page=folder.asset(LETTERHEAD), top=db.setting_num("letterhead_top"),
+                        bottom=db.setting_num("letterhead_bottom"))
+
+
+LETTERHEAD = "letterhead.png"     # the company's letter paper (full A4 page), chosen in «النماذج»
 
 
 def images(folder):

@@ -156,6 +156,41 @@ class TemplatesPage(QWidget):
             row.addWidget(b2)
             grid.addLayout(row)
         v.addWidget(g)
+        g = QGroupBox("ورق الخطابات (الترويسة والتذييل) — صفحة A4 كاملة تظهر خلف كل النماذج")
+        row = QHBoxLayout(g)
+        self.paper = QLabel()
+        self.paper.setFixedSize(90, 127)
+        self.paper.setStyleSheet("border:1px solid #d0d5dd; background:white;")
+        self.paper.setAlignment(Qt.AlignCenter)
+        row.addWidget(self.paper)
+        col = QVBoxLayout()
+        note = QLabel("اختر ملف PDF أو صورة للورق الرسمي (مثل الورق المطبوع بالشعار والعنوان). عند وجوده يحل محل "
+                      "الشعار واسم الشركة وتذييل الصفحة. حدد أين يبدأ النص وأين ينتهي حتى لا يغطي الترويسة أو التذييل.")
+        note.setWordWrap(True)
+        col.addWidget(note)
+        form = QHBoxLayout()
+        self.top_mm = QSpinBox()
+        self.top_mm.setRange(10, 120)
+        self.top_mm.setSuffix(" مم")
+        self.bottom_mm = QSpinBox()
+        self.bottom_mm.setRange(5, 100)
+        self.bottom_mm.setSuffix(" مم")
+        form.addWidget(QLabel("بداية النص من أعلى الصفحة:"))
+        form.addWidget(self.top_mm)
+        form.addWidget(QLabel("ونهايته قبل أسفل الصفحة بـ:"))
+        form.addWidget(self.bottom_mm)
+        form.addStretch()
+        col.addLayout(form)
+        btns = QHBoxLayout()
+        for text, fn in (("اختيار ملف الورق (PDF أو صورة)", self.pick_paper), ("حذف", self.remove_paper),
+                         ("💾 حفظ المسافات", self.save_paper), ("👁 معاينة على خطاب", self.preview_paper)):
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            btns.addWidget(b)
+        btns.addStretch()
+        col.addLayout(btns)
+        row.addLayout(col, 1)
+        v.addWidget(g)
         v.addStretch()
         tabs.addTab(w, "بيانات الخطابات والختم والتوقيع")
 
@@ -177,6 +212,15 @@ class TemplatesPage(QWidget):
                                         if not pix.isNull() else QPixmap())
             if pix.isNull():
                 self.thumbs[name].setText("لا توجد صورة")
+        self.top_mm.setValue(int(db.setting_num("letterhead_top")))
+        self.bottom_mm.setValue(int(db.setting_num("letterhead_bottom")))
+        p = self.win.folder.asset(stages.LETTERHEAD)
+        pix = QPixmap(p) if os.path.exists(p) else QPixmap()
+        if pix.isNull():
+            self.paper.setPixmap(QPixmap())
+            self.paper.setText("بدون\n(الترويسة\nالحالية)")
+        else:
+            self.paper.setPixmap(pix.scaled(88, 125, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         if self.list.currentRow() < 0:
             self.list.setCurrentRow(0)
         else:
@@ -330,6 +374,54 @@ class TemplatesPage(QWidget):
         img.save(self.win.folder.asset(name), "PNG")
         self.win.db.log("تغيير صورة", name)
         self.load()
+
+    def pick_paper(self):
+        if not self.win.can_edit():
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "ورق الخطابات", os.path.expanduser("~"),
+                                              "PDF أو صورة (*.pdf *.png *.jpg *.jpeg)")
+        if not path:
+            return
+        img = L.page_image(path)
+        if img.isNull():
+            error(self, "تعذر فتح الملف.")
+            return
+        img.save(self.win.folder.asset(stages.LETTERHEAD), "PNG")
+        self.win.db.log("تغيير ورق الخطابات", os.path.basename(path))
+        self.load()
+        self.preview_paper()
+
+    def remove_paper(self):
+        if not self.win.can_edit():
+            return
+        p = self.win.folder.asset(stages.LETTERHEAD)
+        if os.path.exists(p) and ask(self, "حذف ورق الخطابات والرجوع للترويسة السابقة (الشعار واسم الشركة)؟"):
+            os.remove(p)
+            self.win.db.log("حذف ورق الخطابات")
+            self.load()
+
+    def save_paper(self):
+        if not self.win.can_edit():
+            return
+        self.win.db.set_setting("letterhead_top", self.top_mm.value())
+        self.win.db.set_setting("letterhead_bottom", self.bottom_mm.value())
+        info(self, "تم حفظ المسافات.")
+
+    def preview_paper(self):
+        """The finance letter on the letter paper, with sample values."""
+        db = self.win.db
+        db.set_setting("letterhead_top", self.top_mm.value())
+        db.set_setting("letterhead_bottom", self.bottom_mm.value())
+        sample = {"code": "00000000", "name": "عميل تجريبي", "cr_no": "0000000000", "rep_name": "مندوب تجريبي"}
+        values = L.letter_values(db, sample, 12345.5, "معاينة", date.today().isoformat())
+        body = L.merge(db.template("1003")["html"], values, stages.images(self.win.folder))
+        out = os.path.join(tempfile.gettempdir(), "معاينة ورق الخطابات.pdf")
+        try:
+            L.write_pdf([body], out, stages.letterhead(db, self.win.folder), "معاينة")
+        except Exception as e:  # noqa: BLE001
+            error(self, f"تعذر إنشاء المعاينة:\n{e}")
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(out))
 
     def remove_image(self, name):
         if not self.win.can_edit():

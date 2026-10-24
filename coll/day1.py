@@ -217,6 +217,62 @@ def build_packages(db, folder, cycle, progress=None):
     return packages
 
 
+MATCH_HEAD, REASON_HEAD = "حالة المطابقة", "سبب عدم المطابقة"
+MATCH_CHOICES = ["مطابق", "غير مطابق", "لم يرد"]
+
+
+def read_rep_sheet(path):
+    """The customers sheet returned by a rep: [(code, status, reason)] for the rows with a status."""
+    import openpyxl
+    from .textutil import code_text, norm
+    wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+    out = []
+    for ws in wb.worksheets:
+        rows = [list(r) for r in ws.iter_rows(values_only=True)]
+        head = next((i for i, r in enumerate(rows[:15]) if any(norm(v) == norm(MATCH_HEAD) for v in r if v)), None)
+        if head is None:
+            continue
+        cells = [norm(v) for v in rows[head]]
+        c_code = next((k for k, v in enumerate(cells) if v == norm("رقم العميل")), 0)
+        c_st = cells.index(norm(MATCH_HEAD))
+        c_rs = next((k for k, v in enumerate(cells) if v == norm(REASON_HEAD)), None)
+        for r in rows[head + 1:]:
+            code = code_text(r[c_code]) if c_code < len(r) else ""
+            st = str(r[c_st] or "").strip() if c_st < len(r) else ""
+            if not code or not st:
+                continue
+            reason = str(r[c_rs] or "").strip() if c_rs is not None and c_rs < len(r) else ""
+            choice = next((ch for ch in MATCH_CHOICES if norm(ch) == norm(st)), None)
+            out.append((code, choice or st, reason))
+    wb.close()
+    return out
+
+
+def apply_rep_sheet(db, cycle, entries):
+    """مطابق → matched, غير مطابق → not matched with the reason, لم يرد → noted (still waiting).
+    Returns (applied, unknown codes, invalid statuses)."""
+    from . import stages
+    known = {c["code"] for c in db.cycle_customers(cycle["id"])}
+    applied, unknown, invalid = 0, [], []
+    for code, st, reason in entries:
+        if code not in known:
+            unknown.append(code)
+            continue
+        if st == "مطابق":
+            stages.set_matched(db, cycle, code, 1, "من ملف المندوب")
+        elif st == "غير مطابق":
+            stages.set_matched(db, cycle, code, 0, reason or "بدون سبب من المندوب")
+        elif st == "لم يرد":
+            db.update_cycle_customer(cycle["id"], code, matched=None, match_reason="لم يرد" + (f": {reason}" if reason
+                                                                                              else ""))
+            db.log("مطابقة", "لم يرد العميل (من ملف المندوب)", code=code, cycle_id=cycle["id"])
+        else:
+            invalid.append(f"{code}: {st}")
+            continue
+        applied += 1
+    return applied, unknown, invalid
+
+
 def _summary_sheet(customers, rep, month, path):
     import openpyxl
     from openpyxl.styles import Font, PatternFill
@@ -227,15 +283,33 @@ def _summary_sheet(customers, rep, month, path):
     ws.append([f"كشوف العملاء المطلوب مطابقتهم — {rep} — {month}"])
     ws["A1"].font = Font(bold=True, size=13)
     ws.append([])
-    head = ["رقم العميل", "اسم العميل", "النوع", "رصيد الأعمار", "المتأخر", "رصيد الكشف", "تفصيل الكشف", "ملاحظات"]
+    head = ["رقم العميل", "اسم العميل", "النوع", "رصيد الأعمار", "المتأخر", "رصيد الكشف", "تفصيل الكشف", "ملاحظات",
+            MATCH_HEAD, REASON_HEAD]
     ws.append(head)
     for cell in ws[3]:
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="12355B")
+    for cell in (ws["I3"], ws["J3"]):
+        cell.fill = PatternFill("solid", fgColor="B54708")
     for c in customers:
         ws.append([c["code"], c["name"], c["types"], c["balance"], c["overdue"], c["stmt_balance"], c["stmt_detail"],
-                   c["warning"]])
-    for col, w in zip("ABCDEFGH", (14, 40, 14, 14, 14, 14, 40, 50)):
+                   c["warning"], "", ""])
+    last = 3 + len(customers)
+    if customers:
+        from openpyxl.worksheet.datavalidation import DataValidation
+        dv = DataValidation(type="list", formula1='"' + ",".join(MATCH_CHOICES) + '"', allow_blank=True,
+                            showErrorMessage=True, errorTitle="حالة المطابقة",
+                            error="اختر من القائمة: " + " / ".join(MATCH_CHOICES))
+        dv.prompt, dv.promptTitle, dv.showInputMessage = "اختر حالة المطابقة من القائمة", "حالة المطابقة", True
+        ws.add_data_validation(dv)
+        dv.add(f"I4:I{last}")
+        fill = PatternFill("solid", fgColor="FFF4D6")
+        for r in range(4, last + 1):
+            ws.cell(r, 9).fill = fill
+            ws.cell(r, 10).fill = fill
+    ws.append([])
+    ws.append(["عبّئ «حالة المطابقة» لكل عميل، واكتب السبب في حال «غير مطابق»، ثم أرجع الملف للتحصيل."])
+    for col, w in zip("ABCDEFGHIJ", (14, 40, 14, 14, 14, 14, 40, 50, 16, 45)):
         ws.column_dimensions[col].width = w
     for row in ws.iter_rows(min_row=4, min_col=4, max_col=6):
         for cell in row:

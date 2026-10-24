@@ -215,6 +215,18 @@ class SettingsPage(QWidget):
         f2.addRow("الموضوع:", self.subject)
         f2.addRow("النص:", self.body)
         v.addWidget(g2)
+        g3 = QGroupBox("المصادقة المباشرة للعميل — المتغيرات: {name} {code} {balance} {days} {deadline} {month} {company}")
+        f3 = QFormLayout(g3)
+        self.confirm_days = QSpinBox()
+        self.confirm_days.setRange(1, 60)
+        self.confirm_days.setSuffix(" يوم")
+        self.d_subject = QLineEdit()
+        self.d_body = QPlainTextEdit()
+        self.d_body.setMinimumHeight(140)
+        f3.addRow("عدم الرد خلال (يُعتبر مطابقًا):", self.confirm_days)
+        f3.addRow("الموضوع:", self.d_subject)
+        f3.addRow("النص:", self.d_body)
+        v.addWidget(g3)
         bar = QHBoxLayout()
         for text, fn in (("💾 حفظ", self.save_mail), ("🔌 اختبار (إرسال رسالة لنفسي)", self.test_mail)):
             b = QPushButton(text)
@@ -302,6 +314,9 @@ class SettingsPage(QWidget):
         self.sender.setText(s.value("mail_sender", "الإدارة المالية"))
         self.subject.setText(db.setting("mail_subject"))
         self.body.setPlainText(db.setting("mail_body"))
+        self.confirm_days.setValue(int(db.setting_num("confirm_days")))
+        self.d_subject.setText(db.setting("direct_subject"))
+        self.d_body.setPlainText(db.setting("direct_body"))
         self.require_pw.setChecked(db.setting("require_password") == "1")
         self.users.clear()
         for u in db.users():
@@ -413,6 +428,9 @@ class SettingsPage(QWidget):
             self.win.db.set_setting("mail_subject", self.subject.text())
             self.win.db.set_setting("mail_body", self.body.toPlainText())
             self.win.db.set_setting("mail_cc", self.cc.text().strip())
+            self.win.db.set_setting("confirm_days", self.confirm_days.value())
+            self.win.db.set_setting("direct_subject", self.d_subject.text())
+            self.win.db.set_setting("direct_body", self.d_body.toPlainText())
         info(self, "تم حفظ إعدادات الإيميل.")
 
     def test_mail(self):

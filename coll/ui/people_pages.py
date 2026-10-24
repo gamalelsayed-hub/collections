@@ -1,11 +1,13 @@
 """Customers, reps and activity-log screens."""
 import os
 
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QSettings, Qt, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
                                QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QTabWidget,
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
+from .. import attachments as A
 from .. import reps as R
 from .widgets import NAVY, ask, error, info, money, month_label, ro, styled_table, warn
 
@@ -25,9 +27,10 @@ class CustomerDialog(QDialog):
         w = QWidget()
         f = QFormLayout(w)
         self.fields = {}
-        for key, label in (("name", "اسم العميل"), ("cr_no", "السجل التجاري"), ("phone", "الجوال"),
-                           ("email", "الإيميل"), ("region", "المنطقة"), ("branch", "الفرع"), ("rep_name", "المندوب"),
-                           ("ctype", "النوع"), ("cls", "التصنيف")):
+        for key, label in (("name", "اسم العميل"), ("cr_no", "السجل التجاري"), ("vat_no", "الرقم الضريبي"),
+                           ("address", "العنوان الوطني المختصر"), ("phone", "الجوال / الهاتف 1"),
+                           ("phone2", "الهاتف 2"), ("email", "الإيميل الرسمي للعميل"), ("region", "المنطقة"),
+                           ("branch", "الفرع"), ("rep_name", "المندوب"), ("ctype", "النوع"), ("cls", "التصنيف")):
             e = QLineEdit(str(self.c.get(key) or ""))
             self.fields[key] = e
             f.addRow(label + ":", e)
@@ -54,6 +57,9 @@ class CustomerDialog(QDialog):
         f.addRow(self.perm)
         f.addRow("سبب الاستثناء:", self.perm_reason)
         tabs.addTab(w, "البيانات")
+        tabs.addTab(self._files_tab(), "المرفقات")
+        self.files_tab_index = tabs.count() - 1
+        self.tabs = tabs
         hist = styled_table(["الدورة", "الحالة", "الرصيد", "المتأخر", "المسدد", "النسبة", "رصيد الكشف", "التنبيهات"])
         rows = []
         for cyc in db.cycles():
@@ -96,6 +102,82 @@ class CustomerDialog(QDialog):
         bb.button(QDialogButtonBox.Save).setEnabled(not win.readonly)
         lay.addWidget(bb)
 
+    # -------- attachments
+    def _files_tab(self):
+        w = QWidget()
+        v = QVBoxLayout(w)
+        self.missing_lbl = QLabel()
+        self.missing_lbl.setWordWrap(True)
+        v.addWidget(self.missing_lbl)
+        bar = QHBoxLayout()
+        self.file_kind = QComboBox()
+        for k, label in A.KINDS:
+            self.file_kind.addItem(label, k)
+        bar.addWidget(QLabel("نوع المستند:"))
+        bar.addWidget(self.file_kind)
+        for text, fn in (("📎 إرفاق ملف", self.attach), ("👁 فتح", self.open_file), ("🗑 حذف", self.delete_file)):
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            b.setEnabled(text.startswith("👁") or not self.win.readonly)
+            bar.addWidget(b)
+        bar.addStretch()
+        v.addLayout(bar)
+        self.files = styled_table(["المستند", "اسم الملف", "تاريخ الإرفاق", "بواسطة"])
+        self.files.doubleClicked.connect(lambda *_: self.open_file())
+        v.addWidget(self.files, 1)
+        self.fill_files()
+        return w
+
+    def fill_files(self):
+        recs = self.win.db.customer_files(self.c["code"])
+        self.file_recs = recs
+        t = self.files
+        t.setRowCount(len(recs))
+        for i, r in enumerate(recs):
+            for col, val in enumerate((A.KIND_NAMES.get(r["kind"], r["kind"]), r["name"], r["uploaded"][:16], r["user"])):
+                t.setItem(i, col, ro(val))
+        t.resizeColumnsToContents()
+        miss = A.missing(self.win.db, {**self.c, "has_pn": self.has_pn.isChecked()}, recs)
+        self.missing_lbl.setText("✓ كل المستندات الأساسية مرفقة." if not miss else
+                                 "⚠ ناقص: " + "، ".join(A.KIND_NAMES[k] for k in miss))
+        self.missing_lbl.setStyleSheet(f"color:{'#067647' if not miss else '#b54708'}; font-weight:600;")
+        if hasattr(self, "tabs"):
+            self.tabs.setTabText(self.files_tab_index, f"المرفقات ({len(recs)})")
+
+    def attach(self):
+        start = QSettings().value("attach_dir", os.path.expanduser("~"))
+        paths, _ = QFileDialog.getOpenFileNames(self, f"إرفاق: {self.file_kind.currentText()}", start,
+                                                "مستندات (*.pdf *.png *.jpg *.jpeg *.doc *.docx *.xls *.xlsx);;كل الملفات (*)")
+        if not paths:
+            return
+        QSettings().setValue("attach_dir", os.path.dirname(paths[0]))
+        try:
+            for p in paths:
+                A.add(self.win.db, self.win.folder, self.c["code"], self.file_kind.currentData(), p)
+        except OSError as e:
+            error(self, f"تعذر نسخ الملف:\n{e}")
+        self.fill_files()
+
+    def _current_file(self):
+        r = self.files.currentRow()
+        return self.file_recs[r] if 0 <= r < len(self.file_recs) else None
+
+    def open_file(self):
+        rec = self._current_file()
+        if not rec:
+            return
+        p = A.full_path(self.win.folder, rec)
+        if not os.path.exists(p):
+            error(self, "الملف غير موجود في فولدر البيانات (ربما لم تكتمل مزامنة الدرايف بعد).")
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(p))
+
+    def delete_file(self):
+        rec = self._current_file()
+        if rec and ask(self, f"حذف «{A.KIND_NAMES.get(rec['kind'], rec['kind'])}: {rec['name']}»؟"):
+            A.remove(self.win.db, self.win.folder, rec)
+            self.fill_files()
+
     def save(self):
         c = dict(self.c)
         for k, e in self.fields.items():
@@ -120,7 +202,7 @@ class CustomerDialog(QDialog):
 
 class CustomersPage(QWidget):
     COLS = ["رقم العميل", "اسم العميل", "المندوب", "الفرع", "النوع", "السجل التجاري", "الجوال", "سند لأمر",
-            "قيمة السند"]
+            "قيمة السند", "الإيميل", "المرفقات"]
 
     def __init__(self, win):
         super().__init__()
@@ -153,6 +235,9 @@ class CustomersPage(QWidget):
 
     def load(self):
         self.all = sorted(self.win.db.customers().values(), key=lambda c: c["code"])
+        self.files_by_code = {}
+        for f in self.win.db.customer_files():
+            self.files_by_code.setdefault(f["code"], []).append(f)
         cur = self.f_rep.currentText()
         self.f_rep.blockSignals(True)
         self.f_rep.clear()
@@ -176,6 +261,13 @@ class CustomersPage(QWidget):
             for col, v in enumerate(vals):
                 t.setItem(i, col, ro(v))
             t.setItem(i, 8, ro(money(c["pn_value"]) if c["pn_value"] else "", True))
+            t.setItem(i, 9, ro(c.get("email") or ""))
+            files = self.files_by_code.get(c["code"], [])
+            miss = A.missing(self.win.db, c, files)
+            it = ro(f"{len(files)} ملف" + (f" — ناقص {len(miss)}" if miss else " ✓") if files else "—")
+            if files:
+                it.setToolTip("ناقص: " + "، ".join(A.KIND_NAMES[k] for k in miss) if miss else "كل المستندات الأساسية")
+            t.setItem(i, 10, it)
         t.resizeColumnsToContents()
         t.setColumnWidth(1, min(t.columnWidth(1), 340))
         self.summary.setText(f"العملاء: {len(vis)} من {len(getattr(self, 'all', []))}   |   بدون سجل تجاري: "
