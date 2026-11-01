@@ -381,6 +381,9 @@ class DB:
             out.setdefault(d["code"], []).append(d)
         return out
 
+    def delete_customer_sections(self, cycle_id, code):
+        self.con.execute("DELETE FROM stmt_sections WHERE cycle_id=? AND code=?", (cycle_id, code))
+
     def clear_sections(self, cycle_id):
         self.con.execute("DELETE FROM stmt_sections WHERE cycle_id=?", (cycle_id,))
         self.con.commit()

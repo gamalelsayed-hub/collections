@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QApplication
 
 from coll.ui.main_window import MainWindow
 from coll.ui.startup import open_session
+from coll.ui.widgets import NoWheelFilter
 
 
 def main():
@@ -13,6 +14,8 @@ def main():
     QCoreApplication.setApplicationName("Collections")
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    no_wheel = NoWheelFilter(app)
+    app.installEventFilter(no_wheel)
     app.setLayoutDirection(Qt.RightToLeft)
     if sys.platform == "win32":
         app.setFont(QFont("Segoe UI", 10))

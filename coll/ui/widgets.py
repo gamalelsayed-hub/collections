@@ -1,13 +1,26 @@
 """Shared dialogs and small helpers for the screens."""
 from datetime import date
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, QObject, Qt
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGridLayout,
+from PySide6.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGridLayout,
                                QLabel, QMessageBox, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout)
 
 NAVY = "#12355b"
 MONTHS = ["يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"]
+
+
+class NoWheelFilter(QObject):
+    """The mouse wheel never changes a number, date or drop-down list (a scroll over the settings changed the
+    collection percentages by mistake): the wheel scrolls the page instead. Type the value or use the arrows."""
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Wheel and isinstance(obj, (QAbstractSpinBox, QComboBox)):
+            event.ignore()      # passed on to the parent, so the page still scrolls
+            return True
+        return False
+
+
 STATUS_COLORS = {"كشف ناقص": "#b42318", "كشف جاهز": "#067647", "اترسل كشف": "#1d6fb8", "مطلوب مطابقة": "#b54708"}
 
 

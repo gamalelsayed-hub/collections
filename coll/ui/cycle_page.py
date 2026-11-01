@@ -1,13 +1,14 @@
-"""The monthly cycle screen — Day 1: aging report → statements → ZIP per rep → e-mail."""
+"""دورة المطابقات الشهرية — Day 1: aging report → statements → ZIP per rep → e-mail."""
 import os
 from datetime import date
 
 from PySide6.QtCore import QSettings, QUrl, Qt
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QHBoxLayout,
-                               QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget)
+                               QInputDialog, QLabel, QLineEdit, QMenu, QPushButton, QVBoxLayout, QWidget)
 
 from .. import aging, day1, mailer
+from .. import statements as ST
 from ..reps import suggest_rep
 from .mail_preview import MailPreviewDialog
 from .widgets import (NAVY, STATUS_COLORS, ColumnMapDialog, MonthDialog, Progress, ask, color_item, error, info, money,
@@ -102,6 +103,16 @@ class CyclePage(QWidget):
         bar.addWidget(self.f_rep, 1)
         bar.addWidget(QLabel("الحالة:"))
         bar.addWidget(self.f_status, 1)
+        b = QPushButton("📎 إرفاق كشف صحيح للعميل المحدد")
+        b.setToolTip("يستبدل كشف العميل المحدد فقط (مثلاً بعد تعديل كشف عليه تنبيه) بدون رفع كل الكشوف مرة ثانية")
+        b.clicked.connect(lambda: self.attach_one())
+        bar.addWidget(b)
+        b = QPushButton("⬇ تنزيل العملاء عليهم تنبيه")
+        menu = QMenu(b)
+        menu.addAction("Excel", lambda: self.export_warnings("xlsx"))
+        menu.addAction("PDF", lambda: self.export_warnings("pdf"))
+        b.setMenu(menu)
+        bar.addWidget(b)
         lay.addLayout(bar)
         self.summary = QLabel()
         self.summary.setStyleSheet(f"color:{NAVY}; font-weight:700;")
@@ -109,6 +120,9 @@ class CyclePage(QWidget):
         self.table = styled_table(["رقم العميل", "اسم العميل", "المندوب", "النوع", "الرصيد", "المتأخر",
                                    "رصيد الكشف", "الحالة", "التنبيهات"])
         self.table.doubleClicked.connect(self._open_customer)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._menu)
+        self.visible = []
         lay.addWidget(self.table, 1)
 
     # ---------------------------------------------------------------- data
@@ -171,6 +185,7 @@ class CyclePage(QWidget):
             if st not in ("كل الحالات", "عليه تنبيه") and r["status"] != st:
                 continue
             vis.append(r)
+        self.visible = vis
         t = self.table
         t.setRowCount(len(vis))
         for i, r in enumerate(vis):
@@ -194,8 +209,120 @@ class CyclePage(QWidget):
                              f"{sum(1 for r in vis if r['warning'])}")
 
     def _open_customer(self, index):
+        r = self.visible[index.row()] if index.row() < len(self.visible) else None
+        if r and r["warning"] and index.column() == 8:     # double click on the warning → attach the right statement
+            self.attach_one(r)
+            return
         code = self.table.item(index.row(), 0).text()
         self.win.open_customer(code)
+
+    def _selected(self):
+        row = self.table.currentRow()
+        return self.visible[row] if 0 <= row < len(self.visible) else None
+
+    def _menu(self, pos):
+        row = self.table.rowAt(pos.y())
+        if row < 0 or row >= len(self.visible):
+            return
+        self.table.selectRow(row)
+        r = self.visible[row]
+        m = QMenu(self)
+        m.addAction(QAction("📎 إرفاق الكشف الصحيح لهذا العميل", m, triggered=lambda: self.attach_one(r)))
+        if r["parts"]:
+            m.addAction(QAction("📄 فتح الكشف الحالي", m, triggered=lambda: self._open_current(r)))
+        m.addAction(QAction("👤 ملف العميل", m, triggered=lambda: self.win.open_customer(r["code"])))
+        m.exec(self.table.viewport().mapToGlobal(pos))
+
+    def _open_current(self, r):
+        """The customer's pages from the uploaded statements, as one PDF."""
+        import tempfile
+        folder = self.win.folder
+        if r.get("statement") and os.path.exists(os.path.join(folder.path, r["statement"])):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.join(folder.path, r["statement"])))
+            return
+        out = os.path.join(tempfile.mkdtemp(prefix="coll-"), f"{r['code']} - الكشف الحالي.pdf")
+        try:
+            ST.write_pdf([(os.path.join(folder.path, p["source"]), p["pages"]) for p in r["parts"]], out)
+        except Exception as e:  # noqa: BLE001
+            error(self, f"تعذر فتح الكشف:\n{e}")
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(out))
+
+    # ------------------------------------------------------- one customer's statement
+    def attach_one(self, r=None):
+        """Replace the statement of one customer only — no need to upload all the statements again."""
+        if not self.win.can_edit() or not self.cycle:
+            return
+        r = r or self._selected()
+        if not r:
+            warn(self, "اختر العميل من الجدول أولًا.")
+            return
+        start = QSettings().value("last_dir", os.path.expanduser("~"))
+        path, _ = QFileDialog.getOpenFileName(self, f"الكشف الصحيح للعميل {r['code']} - {r['name']}", start,
+                                              "PDF (*.pdf)")
+        if not path:
+            return
+        QSettings().setValue("last_dir", os.path.dirname(path))
+        db, folder = self.win.db, self.win.folder
+        try:
+            with Progress(self, f"قراءة كشف {r['name']}") as bar:
+                new = day1.replace_customer_statement(db, folder, self.cycle, r["code"], path, bar)
+        except Exception as e:  # noqa: BLE001
+            error(self, f"تعذر قراءة الملف:\n{e}")
+            return
+        if not new:
+            if not ask(self, f"لم أجد في الملف كشفًا برقم العميل {r['code']}.\n"
+                             "إرفاق الملف كله ككشف لهذا العميل وكتابة رصيده يدويًا؟"):
+                return
+            bal, ok = QInputDialog.getDouble(self, "رصيد الكشف", "إجمالي الرصيد عليكم في الكشف:",
+                                             float(r["balance"] or 0), -1e12, 1e12, 2)
+            if not ok:
+                return
+            kinds = {(p["account"], p["account_name"]) for p in r["parts"]}
+            acc, acc_name = next(iter(kinds)) if len(kinds) == 1 else (ST.CREDIT_ACCOUNT, "العملاء")
+            try:
+                new = day1.replace_customer_statement(db, folder, self.cycle, r["code"], path,
+                                                      whole=(acc, acc_name, bal))
+            except Exception as e:  # noqa: BLE001
+                error(self, f"تعذر إرفاق الملف:\n{e}")
+                return
+        self.refresh()
+        now = next((x for x in self.rows if x["code"] == r["code"]), None)
+        msg = [f"تم استبدال كشف {r['name']} ({r['code']}) — رصيد الكشف الجديد "
+               f"{money(sum(s.balance or 0 for s in new))}، رصيد تقرير الأعمار {money(r['balance'])}."]
+        if now and now["warning"]:
+            msg.append("\n⚠ ما زال عليه تنبيه:\n" + now["warning"].replace(" | ", "\n"))
+        else:
+            msg.append("\n✅ لا توجد تنبيهات على العميل الآن.")
+        if self.packages:
+            self.packages = []
+            self.pack_info.setText("تم تغيير كشف عميل — اضغط «تجهيز الملفات حسب المندوب» مرة ثانية قبل التنزيل أو "
+                                   "الإرسال.")
+            msg.append("\nاضغط «تجهيز الملفات حسب المندوب» مرة ثانية حتى يدخل الكشف الجديد في ملف المندوب.")
+        info(self, "\n".join(msg))
+
+    def export_warnings(self, kind):
+        rows = [r for r in self.visible if r["warning"]]
+        if not rows:
+            info(self, "لا يوجد عملاء عليهم تنبيه في القائمة المعروضة.")
+            return
+        rep = self.f_rep.currentText()
+        title = f"العملاء عليهم تنبيه — دورة {month_label(self.cycle['month'])}" + \
+            (f" — {rep}" if rep not in ("", "الكل") else "")
+        start = QSettings().value("last_dir", os.path.expanduser("~"))
+        default = os.path.join(start, f"عليهم تنبيه - {self.cycle['month']}.{kind}")
+        flt = "Excel (*.xlsx)" if kind == "xlsx" else "PDF (*.pdf)"
+        path, _ = QFileDialog.getSaveFileName(self, "حفظ العملاء عليهم تنبيه", default, flt)
+        if not path:
+            return
+        if not path.lower().endswith("." + kind):
+            path += "." + kind
+        try:
+            (day1.export_warnings_excel if kind == "xlsx" else day1.export_warnings_pdf)(rows, path, title)
+        except Exception as e:  # noqa: BLE001
+            error(self, f"تعذر الحفظ:\n{e}")
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
     # ---------------------------------------------------------------- step 1
     def upload_aging(self, force_columns=False):

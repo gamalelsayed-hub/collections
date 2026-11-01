@@ -56,7 +56,7 @@ class MainWindow(QMainWindow):
         self.cycle_page = CyclePage(self)
         self.customers_page = CustomersPage(self)
         self.follow_page = FollowPage(self)
-        self.pages = [("📊 اللوحة الشهرية", DashboardPage(self)), ("🔄 الدورة الشهرية (يوم 1)", self.cycle_page),
+        self.pages = [("📊 اللوحة الشهرية", DashboardPage(self)), ("🔄 دورة المطابقات الشهرية", self.cycle_page),
                       ("📨 المتابعة والخطابات", self.follow_page), ("🗂 سجل الخطابات والتفاوض", LettersPage(self)),
                       ("📝 النماذج", TemplatesPage(self)), ("👥 العملاء", self.customers_page),
                       ("🧑‍💼 المناديب", RepsPage(self)), ("📜 سجل العمليات", LogPage(self)),

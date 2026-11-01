@@ -171,3 +171,49 @@ def test_aging_page_skipped_when_totals_differ(tmp_path, monkeypatch, qapp):
     c = db.cycle_customer(cycle["id"], "90000001")
     assert len(PdfReader(os.path.join(folder.path, c["statement"])).pages) == 2
     assert "لم تُرفق صفحة الأعمار" in c["warning"]
+
+
+def test_replace_one_customer_statement(tmp_path, monkeypatch):
+    """A customer with a warning gets its corrected statement alone; the other customers keep theirs."""
+    folder = DataFolder(str(tmp_path / "data"))
+    db = DB(folder.db_path, "tester")
+    rows = sample_rows()
+    first, mapping = aging.guess_columns(rows)
+    recs = aging.read_rows(rows, first, mapping)
+    db.upsert_from_aging(recs)
+    db.create_cycle("2026-10", "aging.xlsx", "2026-10-01", aging.group_customers(recs, 30, 60))
+    cycle = db.cycle("2026-10")
+    credit = blank_pdf(tmp_path / "credit.pdf", 3)
+    fixed = blank_pdf(tmp_path / "fixed.pdf", 2)
+    manual = blank_pdf(tmp_path / "manual.pdf", 4)
+    fake = {
+        credit: [ST.Section("90000001", "عميل أ", "1140101", "العملاء", credit, [0], 1.0),     # wrong balance
+                 ST.Section("90000004", "عميل د", "1140101", "العملاء", credit, [1, 2], 300.0)],
+        fixed: [ST.Section("90000001", "عميل أ", "1140101", "العملاء", fixed, [0, 1], 600.0),
+                ST.Section("90000004", "عميل د", "1140101", "العملاء", fixed, [0], 5.0)],     # ignored
+        manual: [],
+    }
+    monkeypatch.setattr(ST, "read_pdf", lambda p, progress=None: (fake[p], []))
+    day1.attach_file(db, folder, cycle, credit, "credit")
+    rev = {c["code"]: c for c in day1.review(db, cycle)}
+    bal = rev["90000001"]["balance"]
+    assert "لا يساوي" in rev["90000001"]["warning"]
+
+    fake[fixed][0].balance = bal
+    new = day1.replace_customer_statement(db, folder, cycle, "90000001", fixed)
+    assert len(new) == 1
+    secs = db.sections(cycle["id"])
+    assert secs["90000001"][0]["pages"] == [0, 1] and secs["90000001"][0]["balance"] == bal
+    assert secs["90000004"][0]["balance"] == 300.0          # other customers untouched
+    rev = {c["code"]: c for c in day1.review(db, cycle)}
+    assert "لا يساوي" not in rev["90000001"]["warning"]
+
+    # a file without the customer's number: nothing changes unless attached whole with a typed balance
+    assert day1.replace_customer_statement(db, folder, cycle, "90000001", manual) == []
+    new = day1.replace_customer_statement(db, folder, cycle, "90000001", manual, whole=("1140101", "العملاء", 99.0))
+    assert db.sections(cycle["id"])["90000001"][0]["pages"] == [0, 1, 2, 3]
+    rev = [c for c in day1.review(db, cycle) if c["warning"]]
+    out = day1.export_warnings_excel(rev, str(tmp_path / "w.xlsx"), "test")
+    import openpyxl
+    ws = openpyxl.load_workbook(out).active
+    assert ws["A4"].value == "90000001" and ws["G4"].value == 99.0

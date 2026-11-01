@@ -62,6 +62,122 @@ def attach_file(db, folder, cycle, path, mode, rep_name="", progress=None):
     return res
 
 
+def replace_customer_statement(db, folder, cycle, code, path, progress=None, whole=None):
+    """A corrected statement for ONE customer (e.g. a warning on its balance): the customer's old sections are
+    replaced by the sections of this customer found in the file — the other customers are not touched.
+    whole=(account, account_name, balance): the file has no readable customer number, so all its pages become the
+    customer's statement with the balance typed by the accountant.
+    Returns the new sections, or [] when the file has no statement for this customer."""
+    c = db.cycle_customer(cycle["id"], code)
+    if c is None:
+        raise ValueError(f"العميل {code} غير موجود في هذه الدورة")
+    name = os.path.basename(path)
+    path = readable(path)
+    if whole is None:
+        sections, _ = ST.read_pdf(path, progress)
+        mine = [s for s in sections if s.code == code]
+        if not mine:
+            return []
+    else:
+        from pypdf import PdfReader
+        account, account_name, balance = whole
+        pages = list(range(len(PdfReader(path).pages)))
+        mine = [ST.Section(code, c["name"], account, account_name, path, pages, balance)]
+    src_dir = folder.files_dir(cycle["month"], "sources")
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    copy = os.path.join(src_dir, f"{stamp} - {code} - {safe_name(name)}")
+    shutil.copy2(path, copy)
+    db.delete_customer_sections(cycle["id"], code)
+    for sec in mine:
+        mode = "credit" if sec.account == ST.CREDIT_ACCOUNT else "custody"
+        db.save_section(cycle["id"], sec, mode, os.path.relpath(copy, folder.path))
+    db.update_cycle_customer(cycle["id"], code, commit=False, statement="")   # the built statement is stale now
+    db.commit()
+    total = sum(s.balance or 0 for s in mine)
+    db.log("استبدال كشف عميل", f"{name}: {len(mine)} كشف برصيد {total:,.2f}"
+           + (" (الملف كاملًا برصيد مكتوب يدويًا)" if whole else ""), code=code, cycle_id=cycle["id"])
+    return mine
+
+
+WARN_HEAD = ["رقم العميل", "اسم العميل", "المندوب", "النوع", "رصيد الأعمار", "المتأخر", "رصيد الكشف", "الفرق",
+             "التنبيه"]
+
+
+def _warn_values(r):
+    diff = None if r.get("stmt_balance") is None else (r["stmt_balance"] or 0) - (r["balance"] or 0)
+    return [r["code"], r["name"], r.get("rep_name") or "", r.get("types") or "", r.get("balance"), r.get("overdue"),
+            r.get("stmt_balance"), diff, (r.get("warning") or "").replace(" | ", "\n")]
+
+
+def export_warnings_excel(rows, path, title):
+    """The customers with a warning, to fix their statements outside the program."""
+    import openpyxl
+    from openpyxl.styles import Alignment, Font, PatternFill
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "عليهم تنبيه"
+    ws.sheet_view.rightToLeft = True
+    ws.append([title])
+    ws["A1"].font = Font(bold=True, size=13)
+    ws.append([])
+    ws.append(WARN_HEAD)
+    for cell in ws[3]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="12355B")
+    for r in rows:
+        ws.append(_warn_values(r))
+    for row in ws.iter_rows(min_row=4, min_col=5, max_col=8):
+        for cell in row:
+            cell.number_format = "#,##0.00"
+    for row in ws.iter_rows(min_row=4, min_col=9, max_col=9):
+        for cell in row:
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
+    for col, w in zip("ABCDEFGHI", (14, 38, 20, 12, 15, 15, 15, 13, 80)):
+        ws.column_dimensions[col].width = w
+    ws.freeze_panes = "A4"
+    wb.save(path)
+    return path
+
+
+def export_warnings_pdf(rows, path, title):
+    """Same list as a landscape PDF table (Qt; columns written reversed so the first column is on the right)."""
+    from html import escape
+
+    from PySide6.QtCore import QMarginsF
+    from PySide6.QtGui import QFont, QPageLayout, QPageSize, QPdfWriter, QTextDocument
+
+    from . import letters as L
+    fmt = [str, str, str, str, L.money, L.money, L.money, L.money, str]
+
+    def cell(v, f):
+        return "" if v is None else escape(f(v)).replace("\n", "<br/>")
+    order = list(range(len(WARN_HEAD)))[::-1]
+    head = "".join(f'<td bgcolor="#12355b" align="center"><font color="white"><b>{WARN_HEAD[i]}</b></font></td>'
+                   for i in order)
+    body = ""
+    for r in rows:
+        vals = _warn_values(r)
+        body += "<tr>" + "".join(f'<td align="{"left" if 4 <= i <= 7 else "right"}">{cell(vals[i], fmt[i])}</td>'
+                                 for i in order) + "</tr>"
+    html = (f'<p dir="rtl" align="center" style="font-size:14pt;"><b>{escape(title)}</b></p>'
+            f'<p dir="rtl" align="right">عدد العملاء: {len(rows)}</p>'
+            '<table dir="rtl" width="100%" border="1" cellspacing="0" cellpadding="4" style="font-size:8.5pt;">'
+            f'<thead><tr>{head}</tr></thead>{body}</table>')
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    writer = QPdfWriter(path)
+    writer.setResolution(L.DPI)
+    writer.setTitle(title)
+    writer.setPageLayout(QPageLayout(QPageSize(QPageSize.A4), QPageLayout.Landscape, QMarginsF(10, 10, 10, 10)))
+    doc = QTextDocument()
+    font = QFont("Arial")
+    font.setPointSizeF(9)
+    doc.setDefaultFont(font)
+    doc.setHtml(f'<html><body dir="rtl">{html}</body></html>')
+    L.make_rtl(doc)
+    doc.print_(writer)
+    return path
+
+
 def review(db, cycle):
     """Check every required customer against its statement sections. Updates status/warnings and returns
     a list of dicts for the screen."""

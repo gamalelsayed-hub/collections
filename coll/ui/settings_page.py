@@ -518,7 +518,7 @@ class SettingsPage(QWidget):
         db.log("مسح بيانات التجربة", "مع العملاء" if self.wipe_customers.isChecked() else "")
         self.win.update_banner()
         self.load()
-        info(self, "تم المسح. ابدأ دورة أكتوبر من شاشة «الدورة الشهرية (يوم 1)».\n"
+        info(self, "تم المسح. ابدأ دورة أكتوبر من شاشة «دورة المطابقات الشهرية».\n"
                    f"النسخة الاحتياطية: {os.path.basename(backup) if backup else '—'}")
 
     def restore(self):

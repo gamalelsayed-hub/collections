@@ -286,7 +286,7 @@ class FollowPage(QWidget):
         if not self.cycle:
             self.rows = []
             self.alert.setText("")
-            self.letter_info.setText("ابدأ الدورة من شاشة «الدورة الشهرية».")
+            self.letter_info.setText("ابدأ الدورة من شاشة «دورة المطابقات الشهرية».")
             self.fill()
             return
         accepted = direct.apply_silent_acceptance(db, self.cycle)
