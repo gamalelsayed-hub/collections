@@ -241,7 +241,7 @@ def test_undo_and_clear_matching(tmp_path):
 
 def test_long_paths_are_shortened(tmp_path):
     from coll.day1 import MAX_PATH, fit_path
-    deep = os.path.join(str(tmp_path), "x" * 120, "1005 نموذج تحديث بيانات", "السماني حسن")
+    deep = os.path.join(str(tmp_path), "x" * (150 - len(str(tmp_path))), "1005 نموذج تحديث بيانات", "السماني حسن")
     p = fit_path(deep, "16010010", "مؤسسة محمد علي مربع لأدوات البناء والسباكة والكهرباء والدهانات", "SL-26-1005-0098")
     assert len(os.path.abspath(p)) <= MAX_PATH
     assert os.path.basename(p).startswith("16010010 - مؤسسة") and p.endswith(" - SL-26-1005-0098.pdf")
