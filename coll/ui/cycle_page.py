@@ -12,7 +12,7 @@ from .. import statements as ST
 from ..reps import suggest_rep
 from .mail_preview import MailPreviewDialog
 from .widgets import (NAVY, STATUS_COLORS, ColumnMapDialog, MonthDialog, Progress, ask, color_item, error, info, money,
-                      month_label, ro, styled_table, warn)
+                      month_label, ro, styled_table, table_copy_actions, warn)
 
 STAGES = [("day_statements", "يوم 1", "تجهيز الكشوف وإرسالها للمناديب"),
           ("day_finance", "يوم 7", "المطابقات + سندات القبض ← خطاب الإدارة المالية"),
@@ -231,6 +231,8 @@ class CyclePage(QWidget):
         if r["parts"]:
             m.addAction(QAction("📄 فتح الكشف الحالي", m, triggered=lambda: self._open_current(r)))
         m.addAction(QAction("👤 ملف العميل", m, triggered=lambda: self.win.open_customer(r["code"])))
+        m.addSeparator()
+        table_copy_actions(self.table, m)
         m.exec(self.table.viewport().mapToGlobal(pos))
 
     def _open_current(self, r):

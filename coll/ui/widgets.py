@@ -58,6 +58,58 @@ def money(v):
     return "‎" + (f"({abs(v):,.2f})" if v < 0 else f"{v:,.2f}") + "‎"
 
 
+CODE_HEADERS = ("رقم العميل",)
+
+
+def copy_rows(t, what="code"):
+    """Copy the selected rows to the clipboard: the customer numbers (one per line), number + name, or whole rows."""
+    from PySide6.QtWidgets import QApplication
+    rows = sorted({i.row() for i in t.selectedIndexes()}) or ([t.currentRow()] if t.currentRow() >= 0 else [])
+    heads = [t.horizontalHeaderItem(c).text() if t.horizontalHeaderItem(c) else "" for c in range(t.columnCount())]
+    code_col = next((c for c, h in enumerate(heads) if h in CODE_HEADERS), None)
+    name_col = next((c for c, h in enumerate(heads) if h == "اسم العميل"), None)
+
+    def text(r, c):
+        it = t.item(r, c)
+        return (it.text() if it else "").replace("\u200e", "").strip()
+    if what == "code" and code_col is not None:
+        lines = [text(r, code_col) for r in rows]
+    elif what == "code_name" and code_col is not None:
+        lines = [f"{text(r, code_col)}\t{text(r, name_col)}" if name_col is not None else text(r, code_col)
+                 for r in rows]
+    else:
+        lines = ["\t".join(text(r, c) for c in range(t.columnCount())) for r in rows]
+    QApplication.clipboard().setText("\n".join(lines))
+
+
+def make_copyable(t):
+    """Ctrl+C copies the customer numbers of the selected rows (or the rows themselves); right-click offers both."""
+    from PySide6.QtGui import QAction, QKeySequence
+    heads = [t.horizontalHeaderItem(c).text() if t.horizontalHeaderItem(c) else "" for c in range(t.columnCount())]
+    has_code = any(h in CODE_HEADERS for h in heads)
+    ctrl_c = QAction(t)
+    ctrl_c.setShortcut(QKeySequence.Copy)
+    ctrl_c.setShortcutContext(Qt.WidgetShortcut)
+    ctrl_c.triggered.connect(lambda: copy_rows(t, "code" if has_code else "row"))
+    t.addAction(ctrl_c)
+    if has_code:
+        for label, what in (("📋 نسخ رقم العميل", "code"), ("📋 نسخ الرقم والاسم", "code_name")):
+            a = QAction(label, t)
+            a.triggered.connect(lambda _=False, w=what: copy_rows(t, w))
+            t.addAction(a)
+    a = QAction("📋 نسخ الصف كاملًا", t)
+    a.triggered.connect(lambda: copy_rows(t, "row"))
+    t.addAction(a)
+    t.setContextMenuPolicy(Qt.ActionsContextMenu)
+
+
+def table_copy_actions(t, menu):
+    """For screens with their own right-click menu: add the copy entries to it."""
+    for a in t.actions():
+        if a.text():
+            menu.addAction(a)
+
+
 def styled_table(cols):
     t = QTableWidget(0, len(cols))
     t.setHorizontalHeaderLabels(cols)
@@ -66,6 +118,7 @@ def styled_table(cols):
     t.setSelectionBehavior(QAbstractItemView.SelectRows)
     t.setAlternatingRowColors(True)
     t.setStyleSheet(f"QHeaderView::section {{ background:{NAVY}; color:white; font-weight:600; padding:4px; }}")
+    make_copyable(t)
     return t
 
 

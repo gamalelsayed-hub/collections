@@ -168,3 +168,51 @@ def test_final_direction_form(tmp_path, qapp):
     packs = stages.issue(db, folder, cyc, [{"code": "90000003", "kind": "FD", "amount": 150.0}], "2026-10-21")
     assert db.letters(code="90000003")[0]["serial"] == "RE-SL-26-FD-0001" and os.path.exists(packs[0]["letters"][0]["pdf"])
     assert db.cycle_customer(cyc["id"], "90000003")["status"] == "توجيه نهائي — بانتظار قرار المدير"
+
+
+def test_receipt_due_date_decides_the_period(tmp_path):
+    toks = ["357", "28/09/2026", "-", "بنكي", "401", "مصرف", "SAR5553", "1140123", "مؤسسة", "الاختبار",
+            "SAR", "90000001", "4,000.00", "8001", "05/10/2026"]
+    r = receipts._pdf_line(toks)
+    assert (r.date, r.due, r.counted) == ("2026-09-28", "2026-10-05", "2026-10-05")
+    folder, db, cyc = setup_cycle(tmp_path)
+    recs = [receipts.Receipt("1", "2026-09-28", "1140101", "عميل أ", "90000001", 100.0, "2026-10-05"),  # counted
+            receipts.Receipt("2", "2026-10-03", "1140101", "عميل أ", "90000001", 50.0, "2026-11-20")]   # later
+    f = tmp_path / "r.pdf"
+    f.write_bytes(b"%PDF-1.4")
+    res = stages.add_receipts(db, folder, cyc, recs, str(f), "2026-10-01", "2026-10-31")
+    assert res["count"] == 1 and res["after"] == 1
+    assert db.cycle_customer(cyc["id"], "90000001")["paid"] == 100.0
+    rec = db.receipts(cyc["id"])[0]
+    assert (rec["date"], rec["voucher_date"]) == ("2026-10-05", "2026-09-28")
+    # Excel with a due-date column
+    rows = [["رقم السند", "تاريخ السند", "تاريخ الاستحقاق", "رقم الحساب", "رقم العميل", "المبلغ"],
+            ["9", "01/10/2026", "15/10/2026", "1140101", "90000001", 10]]
+    first, mapping = receipts.guess_columns(rows)
+    assert mapping["due"] == 2 and mapping["date"] == 1
+    out, _ = receipts.read_rows(rows, first, mapping)
+    assert out[0].counted == "2026-10-15"
+
+
+def test_balance_from_statement_and_letter_amount(tmp_path):
+    folder, db, cyc = setup_cycle(tmp_path)
+    c = db.cycle_customer(cyc["id"], "90000003")
+    assert stages.balance_of(c) == c["balance"]         # no statement read: the aging balance
+    db.update_cycle_customer(cyc["id"], "90000003", stmt_balance=200.0, paid=30.0)
+    c = db.cycle_customer(cyc["id"], "90000003")
+    assert stages.balance_of(c) == 200.0 and stages.balance_after(c) == 170.0
+    assert stages.remaining(c, "balance_paid") == 170.0
+    assert db.setting("letter_amount") == "balance_paid"
+
+
+def test_signed_statement_kept_per_rep_and_in_attachments(tmp_path):
+    folder, db, cyc = setup_cycle(tmp_path)
+    f = tmp_path / "90000001 - عميل أ.pdf"
+    f.write_bytes(b"%PDF-1.4")
+    stages.attach_signed(db, folder, cyc, [str(f)])
+    c = db.cycle_customer(cyc["id"], "90000001")
+    from coll.day1 import safe_name
+    assert os.path.join("signed", safe_name(c["rep_name"] or "بدون مندوب")) in c["signed"]
+    assert os.path.exists(os.path.join(folder.path, c["signed"]))
+    files = db.customer_files("90000001")
+    assert files and files[0]["kind"] == "signed" and files[0]["path"] == c["signed"]

@@ -5,21 +5,36 @@ from PySide6.QtCore import QDate, QSettings, Qt, QUrl
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDateEdit, QDialog, QDialogButtonBox,
                                QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout, QHBoxLayout, QInputDialog,
-                               QLabel, QLineEdit, QMenu, QPushButton, QTableWidgetItem, QVBoxLayout,
+                               QLabel, QLineEdit, QMenu, QPushButton, QSpinBox, QTableWidgetItem, QVBoxLayout,
                                QWidget)
 
 from .. import direct, mailer, receipts, stages
 from .cycle_page import step_box
 from .mail_preview import MailPreviewDialog
 from .widgets import (NAVY, ColumnMapDialog, Progress, ask, color_item, error, info, money, month_label, ro, styled_table,
-                      warn)
+                      table_copy_actions, warn)
 
 STATUS_COLORS = {"خطاب مالي": "#b54708", "خطاب قانوني — إيقاف بيع": "#b42318", "توجيه نهائي — بانتظار قرار المدير": "#7a271a", "تحت التفاوض": "#6941c6", "مستبعد": "#667085", "مطابق": "#067647",
                  "غير مطابق": "#b42318"}
 # letter types that can replace each other for one customer
 SWITCH = {"1004": "1004PN", "1004PN": "1004"}
-COLS = ["✔", "رقم العميل", "اسم العميل", "المندوب", "المتأخر يوم 1", "المسدد", "النسبة", "المطابقة",
-        "الحالة", "الخطاب المقترح", "مبلغ الخطاب", "السبب / ملاحظات"]
+COLS = ["✔", "رقم العميل", "اسم العميل", "المندوب", "الرصيد (الكشف)", "المتأخر يوم 1", "المسدد", "النسبة",
+        "الرصيد بعد السداد", "المطابقة", "سبب عدم المطابقة", "الحالة", "الخطاب المقترح", "مبلغ الخطاب",
+        "السبب / ملاحظات"]
+C_MATCH, C_MREASON, C_AMOUNT = COLS.index("المطابقة"), COLS.index("سبب عدم المطابقة"), COLS.index("مبلغ الخطاب")
+MATCH_FILTERS = ["الكل", "مطابق", "غير مطابق", "لم يرد", "لم يرجع بعد"]
+
+
+def match_text(r):
+    if r["matched"] == 1:
+        return "مطابق"
+    if r["matched"] == 0:
+        return "غير مطابق"
+    return "لم يرد" if (r.get("match_reason") or "").startswith("لم يرد") else "لم يرجع بعد"
+
+
+def unmatched_reason(r):
+    return "" if r["matched"] == 1 else (r.get("match_reason") or "").strip()
 
 
 def pct_text(p):
@@ -109,12 +124,20 @@ class FollowPage(QWidget):
 
         steps = QHBoxLayout()
         b1, v1 = step_box("١) الكشوف الموقعة (المطابقات)")
-        self.signed_info = QLabel("سمِّ كل ملف برقم العميل (مثل 18010274.pdf) وارفعها مرة واحدة. أو اضغط كليك يمين "
-                                  "على العميل في الجدول ← مطابق / غير مطابق.")
+        self.signed_info = QLabel("سمِّ كل ملف برقم العميل (مثل «18010274 - اسم العميل.pdf») وارفعها مرة واحدة. أو "
+                                  "كليك يمين على العميل ← مطابق / غير مطابق. ضغطتين على خانة المطابقة تفتح الكشف.")
         self.signed_info.setWordWrap(True)
         v1.addWidget(self.signed_info)
         b = QPushButton("📥 رفع الكشوف الموقعة")
         b.clicked.connect(self.upload_signed)
+        v1.addWidget(b)
+        b = QPushButton("📂 فتح فولدر المطابقات (حسب المندوب)")
+        b.setToolTip("كل كشف موقع يُحفظ في فولدر مندوبه، ويظهر أيضًا في مرفقات بطاقة العميل")
+        b.clicked.connect(self.open_signed_folder)
+        v1.addWidget(b)
+        b = QPushButton("📋 تصدير أسماء ملفات المطابقات")
+        b.setToolTip("Excel فيه لكل عميل اسم الملف المطلوب (الرقم - الاسم): انسخه وسمِّ به ملف المطابقة ثم ارفعها كلها مرة واحدة")
+        b.clicked.connect(self.export_file_names)
         v1.addWidget(b)
         b = QPushButton("📥 رفع ملف حالة المطابقة من المندوب")
         b.setToolTip("ملف «قائمة العملاء» اللي في الملف المضغوط بعد ما يعبّي المندوب عمود حالة المطابقة والسبب")
@@ -122,8 +145,9 @@ class FollowPage(QWidget):
         v1.addWidget(b)
         v1.addStretch()
         b2, v2 = step_box("٢) سندات القبض")
-        self.rec_info = QLabel("ارفع تقرير سندات القبض من النظام (PDF أو Excel). يُحسب فقط ما له رقم عميل في "
-                               "الحساب التحليلي، وتُستبعد التحويلات بين الصناديق والبنوك.")
+        self.rec_info = QLabel("ارفع تقرير سندات القبض من النظام (PDF أو Excel). يُحسب السند بتاريخ الاستحقاق "
+                               "(وليس تاريخ السند)، وفقط ما له رقم عميل في الحساب التحليلي، وتُستبعد التحويلات بين "
+                               "الصناديق والبنوك.")
         self.rec_info.setWordWrap(True)
         v2.addWidget(self.rec_info)
         for text, fn in (("📥 رفع سندات قبض", self.upload_receipts), ("🧾 عرض السندات المرفوعة", self.show_receipts)):
@@ -208,6 +232,30 @@ class FollowPage(QWidget):
             b = QPushButton(text)
             b.clicked.connect(lambda _=None, v=val: self.check_all(v))
             bar.addWidget(b)
+        lay.addLayout(bar)
+        bar = QHBoxLayout()
+        self.f_match = QComboBox()
+        self.f_match.addItems(MATCH_FILTERS)
+        self.f_reason = QComboBox()
+        self.f_reason.setMinimumWidth(200)
+        self.f_paid = QComboBox()
+        self.f_paid.addItems(["الكل", "سدد", "لم يسدد"])
+        self.f_pmin, self.f_pmax = QSpinBox(), QSpinBox()
+        for sp, v in ((self.f_pmin, 0), (self.f_pmax, 1000)):
+            sp.setRange(0, 1000)
+            sp.setSuffix("%")
+            sp.setValue(v)
+            sp.valueChanged.connect(self.fill)
+        for w_ in (self.f_match, self.f_reason, self.f_paid):
+            w_.currentIndexChanged.connect(self.fill)
+        for label, w_ in (("المطابقة:", self.f_match), ("سبب عدم المطابقة:", self.f_reason),
+                          ("السداد:", self.f_paid), ("نسبة السداد من:", self.f_pmin), ("إلى:", self.f_pmax)):
+            bar.addWidget(QLabel(label))
+            bar.addWidget(w_, 2 if w_ is self.f_reason else 0)
+        b = QPushButton("مسح الفلاتر")
+        b.clicked.connect(self.clear_filters)
+        bar.addWidget(b)
+        bar.addStretch()
         lay.addLayout(bar)
         self.summary = QLabel()
         self.summary.setStyleSheet(f"color:{NAVY}; font-weight:700;")
@@ -330,6 +378,14 @@ class FollowPage(QWidget):
         self.f_rep.addItems(reps)
         self.f_rep.setCurrentIndex(max(0, self.f_rep.findText(cur)))
         self.f_rep.blockSignals(False)
+        reasons = sorted({unmatched_reason(r) for r in self.rows if unmatched_reason(r)})
+        cur = self.f_reason.currentText()
+        self.f_reason.blockSignals(True)
+        self.f_reason.clear()
+        self.f_reason.addItem("الكل")
+        self.f_reason.addItems(reasons)
+        self.f_reason.setCurrentIndex(max(0, self.f_reason.findText(cur)))
+        self.f_reason.blockSignals(False)
         stop = stages.stop_sale(db, self.cycle)
         late = stages.late_instalments(db)
         self.alert.setText("   ".join(x for x in (
@@ -345,14 +401,36 @@ class FollowPage(QWidget):
                  "لإرسال المصادقة مباشرة حدد العملاء اللي عندهم إيميل في بطاقة العميل.")
         self.fill()
 
+    def clear_filters(self):
+        for w_ in (self.f_match, self.f_reason, self.f_paid):
+            w_.blockSignals(True)
+            w_.setCurrentIndex(0)
+            w_.blockSignals(False)
+        self.f_pmin.blockSignals(True)
+        self.f_pmin.setValue(0)
+        self.f_pmin.blockSignals(False)
+        self.f_pmax.setValue(1000)
+        self.fill()
+
     def visible_rows(self):
         s = self.search.text().strip()
         rep = self.f_rep.currentText()
+        mt, reason, paid = self.f_match.currentText(), self.f_reason.currentText(), self.f_paid.currentText()
+        lo, hi = self.f_pmin.value() / 100, self.f_pmax.value() / 100
         out = []
         for r in self.rows:
             if s and s not in r["code"] and s not in (r["name"] or ""):
                 continue
             if rep and rep != "الكل" and r["rep_name"] != rep:
+                continue
+            if mt not in ("", "الكل") and match_text(r) != mt:
+                continue
+            if reason not in ("", "الكل") and unmatched_reason(r) != reason:
+                continue
+            if paid == "سدد" and (r["paid"] or 0) <= 0.005 or paid == "لم يسدد" and (r["paid"] or 0) > 0.005:
+                continue
+            pct = round(r["pct"] or 0, 4)
+            if pct < lo - 1e-9 or (hi < 10 and pct > hi + 1e-9):
                 continue
             out.append(r)
         return out
@@ -375,27 +453,37 @@ class FollowPage(QWidget):
             t.setItem(i, 1, ro(r["code"]))
             t.setItem(i, 2, ro(r["name"]))
             t.setItem(i, 3, ro(r["rep_name"]))
-            t.setItem(i, 4, ro(money(r["overdue"]), True))
-            t.setItem(i, 5, ro(money(r["paid"] or 0), True))
+            bal = ro(money(stages.balance_of(r)), True)
+            if r.get("stmt_balance") is None:
+                bal.setToolTip("لم يُقرأ رصيد من كشف العميل — المعروض رصيد تقرير الأعمار")
+            t.setItem(i, 4, bal)
+            t.setItem(i, 5, ro(money(r["overdue"]), True))
+            t.setItem(i, 6, ro(money(r["paid"] or 0), True))
             it = ro(pct_text(r["pct"]), True)
             color_item(it, "#067647" if (r["pct"] or 0) >= stages.threshold(self.win.db, self.stage_key()) else "#b42318")
-            t.setItem(i, 6, it)
+            t.setItem(i, 7, it)
+            t.setItem(i, 8, ro(money(stages.balance_after(r)), True))
             mt = ro({1: "✔ مطابق", 0: "✖ غير مطابق"}.get(r["matched"], "لم يرد" if (r.get("match_reason") or "")
-                                                            .startswith("لم يرد") else "—"))
-            if r.get("match_reason"):
-                mt.setToolTip(r["match_reason"])
-            t.setItem(i, 7, mt)
+                                                            .startswith("لم يرد") else "—")
+                    + (" 📎" if r.get("signed") else ""))
+            if r.get("signed"):
+                mt.setToolTip("ضغطتين لفتح الكشف الموقع")
+            t.setItem(i, C_MATCH, mt)
+            mr = ro(unmatched_reason(r))
+            if r["matched"] == 0:
+                color_item(mr, "#b42318")
+            t.setItem(i, C_MREASON, mr)
             it = ro(r["status"])
             color_item(it, STATUS_COLORS.get(r["status"], "#344054"))
-            t.setItem(i, 8, it)
-            t.setItem(i, 9, ro(stages.KIND_NAMES.get(r["kind"], "") + (f" ({r['kind'][:4]})" if r["kind"] else "")))
+            t.setItem(i, 11, it)
+            t.setItem(i, 12, ro(stages.KIND_NAMES.get(r["kind"], "") + (f" ({r['kind'][:4]})" if r["kind"] else "")))
             amt = QTableWidgetItem(f"{r['amount']:.2f}")
             amt.setTextAlignment(Qt.AlignAbsolute | Qt.AlignRight | Qt.AlignVCenter)
             if not candidates_view:
                 amt.setFlags(amt.flags() & ~Qt.ItemIsEditable)
             amt.setToolTip("اضغط مرتين لتعديل مبلغ الخطاب")
-            t.setItem(i, 10, amt)
-            t.setItem(i, 11, ro(r["reason"]))
+            t.setItem(i, C_AMOUNT, amt)
+            t.setItem(i, 14, ro(r["reason"]))
             if not r["eligible"] and candidates_view:
                 for c in range(t.columnCount()):
                     if t.item(i, c):
@@ -403,17 +491,24 @@ class FollowPage(QWidget):
         t.blockSignals(False)
         t.resizeColumnsToContents()
         t.setColumnWidth(2, min(t.columnWidth(2), 280))
+        t.setColumnWidth(C_MREASON, min(t.columnWidth(C_MREASON), 260))
         total_paid = sum(r["paid"] or 0 for r in rows)
         total_over = sum(r["overdue"] or 0 for r in rows)
-        self.summary.setText(f"المعروض: {len(rows)} عميل   |   المتأخر يوم 1: {money(total_over)}   |   المسدد: "
-                             f"{money(total_paid)} ({pct_text(total_paid / total_over if total_over else 0)})")
+        total_bal = sum(stages.balance_of(r) for r in rows)
+        self.summary.setText(f"المعروض: {len(rows)} عميل   |   الرصيد: {money(total_bal)}   |   المتأخر يوم 1: "
+                             f"{money(total_over)}   |   المسدد: {money(total_paid)} "
+                             f"({pct_text(total_paid / total_over if total_over else 0)})   |   الرصيد بعد السداد: "
+                             f"{money(total_bal - total_paid)}")
 
     def _row_at(self, i):
         code = self.table.item(i, 1).text()
         return next(r for r in self.rows if r["code"] == code)
 
     def _double(self, row, col):
-        if col != 10 or self.view.currentIndex() != 0:
+        if col == C_MATCH and self._row_at(row).get("signed"):
+            self.open_signed(self._row_at(row))
+            return
+        if col != C_AMOUNT or self.view.currentIndex() != 0:
             self.win.open_customer(self.table.item(row, 1).text())
             self.refresh()
 
@@ -429,7 +524,7 @@ class FollowPage(QWidget):
             if self.table.item(i, 0).checkState() == Qt.Checked:
                 r = self._row_at(i)
                 try:
-                    amount = float(self.table.item(i, 10).text().replace(",", ""))
+                    amount = float(self.table.item(i, C_AMOUNT).text().replace(",", ""))
                 except ValueError:
                     amount = r["amount"]
                 out.append({"code": r["code"], "kind": r["kind"], "amount": amount, "name": r["name"],
@@ -445,6 +540,9 @@ class FollowPage(QWidget):
         m = QMenu(self)
         acts = [("✔ مطابق", lambda: self._match(r, 1)), ("✖ غير مطابق (مع السبب)", lambda: self._match(r, 0)),
                 ("📎 إرفاق كشف موقع لهذا العميل", lambda: self._attach_one(r))]
+        if r.get("signed"):
+            acts.append(("📄 فتح الكشف الموقع (المطابقة)", lambda: self.open_signed(r)))
+
         if r["matched"] == 1:
             if r.get("stop_letters"):
                 acts.append(("▶ استكمال مراحل الخطابات لهذا العميل المطابق", lambda: self._stop(r, False)))
@@ -467,6 +565,8 @@ class FollowPage(QWidget):
                 m.addSeparator()
             else:
                 m.addAction(a[0]).triggered.connect(a[1])
+        m.addSeparator()
+        table_copy_actions(self.table, m)
         m.exec(self.table.viewport().mapToGlobal(pos))
 
     def _match(self, r, value):
@@ -689,7 +789,7 @@ class FollowPage(QWidget):
             start, end = self.period()
             res = stages.add_receipts(db, self.win.folder, self.cycle, recs, p, start, end)
             if res["before"] or res["after"]:
-                lines.append(f"📅 الفترة المقبولة {self.p_start.date().toString('dd/MM/yyyy')} — "
+                lines.append(f"📅 الفترة المقبولة (بتاريخ الاستحقاق) {self.p_start.date().toString('dd/MM/yyyy')} — "
                              f"{self.p_end.date().toString('dd/MM/yyyy')}: "
                              + (f"رُفض {res['before']} سند قبل بداية الدورة. " if res["before"] else "")
                              + (f"رُفض {res['after']} سند بعد نهاية المرحلة — ارفعها مع المرحلة القادمة."
@@ -712,10 +812,15 @@ class FollowPage(QWidget):
         saved = db.column_map("receipts")
         first, mapping = receipts.guess_columns(rows)
         if saved:
+            g_first, g_map = first, mapping
             first, mapping = saved["first"], {k: int(v) for k, v in saved["mapping"].items()}
+            if "due" not in mapping and "due" in g_map and g_first == first and g_map["due"] not in mapping.values():
+                mapping["due"] = g_map["due"]     # older saved settings had no due-date column
+                db.save_column_map("receipts", {"mapping": mapping, "first": first})
         if not saved or "code" not in mapping or "amount" not in mapping:
             dlg = ColumnMapDialog(self, rows, receipts.ROLES, receipts.ROLE_LABELS, first, mapping,
-                                  "حدد عمود رقم العميل (الحساب التحليلي) والمبلغ على الأقل. يُحفظ الإعداد للمرات القادمة.")
+                                  "حدد عمود رقم العميل (الحساب التحليلي) والمبلغ على الأقل، وتاريخ الاستحقاق (يُحسب به "
+                                  "السداد؛ لو ما حددته يُستخدم تاريخ السند). يُحفظ الإعداد للمرات القادمة.")
             if dlg.exec() != QDialog.Accepted:
                 return None, 0
             mapping, first = dlg.mapping(), dlg.first_row()
@@ -734,13 +839,15 @@ class FollowPage(QWidget):
         dlg.setWindowTitle(f"سندات القبض — دورة {month_label(self.cycle['month'])}")
         dlg.resize(1000, 600)
         v = QVBoxLayout(dlg)
-        t = styled_table(["رقم السند", "التاريخ", "رقم العميل", "الاسم", "الحساب", "المبلغ", "الملف"])
+        t = styled_table(["رقم السند", "تاريخ الاستحقاق (المحسوب)", "تاريخ السند", "رقم العميل", "الاسم", "الحساب",
+                          "المبلغ", "الملف"])
         t.setRowCount(len(recs))
         for i, r in enumerate(recs):
-            for c, val in enumerate((r["voucher"], r["date"], r["code"], r["name"], r["account"])):
+            for c, val in enumerate((r["voucher"], r["date"], r.get("voucher_date") or "", r["code"], r["name"],
+                                     r["account"])):
                 t.setItem(i, c, ro(val))
-            t.setItem(i, 5, ro(money(r["amount"]), True))
-            t.setItem(i, 6, ro(os.path.basename(r["source"] or "")))
+            t.setItem(i, 6, ro(money(r["amount"]), True))
+            t.setItem(i, 7, ro(os.path.basename(r["source"] or "")))
         t.resizeColumnsToContents()
         v.addWidget(QLabel(f"{len(recs)} سند — الإجمالي {money(sum(r['amount'] for r in recs))}"))
         v.addWidget(t, 1)
@@ -860,19 +967,75 @@ class FollowPage(QWidget):
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.sheet_view.rightToLeft = True
-        ws.append(COLS[1:])
+        head = COLS[1:]
+        ws.append(head)
         for cell in ws[1]:
             cell.font = Font(bold=True, color="FFFFFF")
             cell.fill = PatternFill("solid", fgColor="12355B")
         for r in self.visible_rows():
-            ws.append([r["code"], r["name"], r["rep_name"], r["overdue"], r["paid"] or 0, r["pct"] or 0,
-                       {1: "مطابق", 0: "غير مطابق"}.get(r["matched"], ""), r["status"],
+            ws.append([r["code"], r["name"], r["rep_name"], stages.balance_of(r), r["overdue"], r["paid"] or 0,
+                       r["pct"] or 0, stages.balance_after(r), match_text(r), unmatched_reason(r), r["status"],
                        stages.KIND_NAMES.get(r["kind"], ""), r["amount"], r["reason"]])
         for row in ws.iter_rows(min_row=2):
-            for c in (3, 4, 9):
+            for c in (3, 4, 5, 7, 12):
                 row[c].number_format = "#,##0.00"
-            row[5].number_format = "0%"
-        for col, w in zip("ABCDEFGHIJK", (12, 40, 20, 14, 14, 9, 12, 22, 22, 14, 40)):
+            row[6].number_format = "0%"
+        for col, w in zip("ABCDEFGHIJKLMN", (12, 40, 20, 14, 14, 14, 9, 14, 12, 30, 22, 22, 14, 40)):
             ws.column_dimensions[col].width = w
         wb.save(path)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    # ---------------------------------------------------------------- signed statements: open & file names
+    def open_signed(self, r):
+        p = os.path.join(self.win.folder.path, r.get("signed") or "")
+        if not r.get("signed") or not os.path.exists(p):
+            warn(self, "ملف الكشف الموقع غير موجود (ربما لم تكتمل مزامنة الدرايف).")
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(p))
+
+    def open_signed_folder(self):
+        if self.cycle:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(self.win.folder.files_dir(self.cycle["month"], "signed")))
+
+    def export_file_names(self):
+        """Customer number + name, written the way the signed statements must be named to be uploaded at once."""
+        if not self.cycle:
+            return
+        rows = self.visible_rows()
+        if not rows:
+            warn(self, "لا يوجد عملاء في القائمة المعروضة.")
+            return
+        from ..day1 import safe_name
+        default = os.path.join(QSettings().value("last_dir", os.path.expanduser("~")),
+                               f"أسماء ملفات المطابقات {self.cycle['month']}.xlsx")
+        path, _ = QFileDialog.getSaveFileName(self, "تصدير أسماء ملفات المطابقات", default, "Excel (*.xlsx)")
+        if not path:
+            return
+        if not path.lower().endswith(".xlsx"):
+            path += ".xlsx"
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "أسماء الملفات"
+        ws.sheet_view.rightToLeft = True
+        ws.append(["اسم الملف المطلوب (انسخه وسمِّ به ملف المطابقة)", "رقم العميل", "اسم العميل", "المندوب",
+                   "المطابقة"])
+        for cell in ws[1]:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor="12355B")
+        for r in sorted(rows, key=lambda x: (x["rep_name"] or "", x["code"])):
+            ws.append([f"{r['code']} - {safe_name(r['name'] or '')}", r["code"], r["name"], r["rep_name"],
+                       match_text(r)])
+        for row in ws.iter_rows(min_row=2, max_col=2):
+            for cell in row:
+                cell.number_format = "@"
+        for col, w in zip("ABCDE", (55, 14, 40, 22, 14)):
+            ws.column_dimensions[col].width = w
+        ws.freeze_panes = "A2"
+        try:
+            wb.save(path)
+        except OSError as e:
+            error(self, f"تعذر الحفظ (الملف مفتوح؟):\n{e}")
+            return
         QDesktopServices.openUrl(QUrl.fromLocalFile(path))

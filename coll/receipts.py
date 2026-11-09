@@ -12,10 +12,12 @@ from .textutil import AMOUNT, code_text, fix_pdf_word, to_number
 
 DATE = re.compile(r"^(\d{1,2})/(\d{1,2})/(\d{4})$")
 CUSTOMER_ACCOUNT = "1140"     # العملاء and the reps' custody accounts
-ROLES = ["voucher", "date", "account", "name", "code", "amount"]
-ROLE_LABELS = {"voucher": "رقم السند", "date": "تاريخ السند", "account": "رقم الحساب", "name": "اسم الحساب",
-               "code": "الحساب التحليلي (رقم العميل)", "amount": "المبلغ"}
-HEADER_WORDS = {"voucher": ("رقم السند",), "date": ("تاريخ السند", "التاريخ"), "account": ("رقم الحساب",),
+ROLES = ["voucher", "due", "date", "account", "name", "code", "amount"]
+ROLE_LABELS = {"voucher": "رقم السند", "due": "تاريخ الاستحقاق (يُحسب به السداد)", "date": "تاريخ السند",
+               "account": "رقم الحساب", "name": "اسم الحساب", "code": "الحساب التحليلي (رقم العميل)",
+               "amount": "المبلغ"}
+HEADER_WORDS = {"voucher": ("رقم السند",), "due": ("الاستحقاق",), "date": ("تاريخ السند", "التاريخ", "تاريخ"),
+                "account": ("رقم الحساب",),
                 "name": ("اسم الحساب", "اسم العميل"), "code": ("التحليلي", "رقم العميل"), "amount": ("المبلغ",)}
 
 
@@ -27,6 +29,11 @@ class Receipt:
     name: str
     code: str
     amount: float
+    due: str = ""      # تاريخ الاستحقاق (ISO) — the date the payment counts on; empty = the voucher date
+
+    @property
+    def counted(self):
+        return self.due or self.date
 
 
 def parse_date(v):
@@ -88,7 +95,9 @@ def _pdf_line(toks):
     name = " ".join(t for t in toks[acc_i + 1:amt_i] if t != code)
     name = re.sub(r"\s*(SAR|RAS)\s*", " ", name).strip()
     name = re.sub(r"(RAS|SAR)$", "", name).strip()
-    return Receipt(toks[0], parse_date(toks[1]), toks[acc_i], name, code, to_number(toks[amt_i]) or 0.0)
+    later = [t for t in toks[amt_i + 1:] if DATE.match(t)]      # the due date comes after the amount
+    due = parse_date(later[-1]) if later else ""
+    return Receipt(toks[0], parse_date(toks[1]), toks[acc_i], name, code, to_number(toks[amt_i]) or 0.0, due)
 
 
 def guess_columns(rows):
@@ -115,8 +124,11 @@ def read_rows(rows, first, mapping, known_codes=None):
         amount = to_number(get("amount"))
         if not amount:
             continue
+        due = parse_date(get("due")) if get("due") not in (None, "") else ""
         rec = Receipt(code_text(get("voucher")), parse_date(get("date")), code_text(get("account")),
-                      str(get("name") or "").strip(), code_text(get("code")), amount)
+                      str(get("name") or "").strip(), code_text(get("code")), amount, due)
+        if not rec.date:
+            rec.date = due
         if is_customer_line(rec.account, rec.code, known_codes) if rec.account else \
                 (rec.code in (known_codes or ()) or bool(re.fullmatch(r"\d{6,}", rec.code or ""))):
             out.append(rec)

@@ -74,6 +74,7 @@ MIGRATIONS = [
     ("customers", "vat_no", "TEXT DEFAULT ''"),
     ("customers", "address", "TEXT DEFAULT ''"),          # short national address
     ("customers", "phone2", "TEXT DEFAULT ''"),
+    ("receipts", "voucher_date", "TEXT DEFAULT ''"),     # the voucher's own date; «date» is the due date counted
 ]
 EXTRA_CYCLE_FIELDS = ["matched", "signed", "paid", "pct", "excluded", "exclude_reason", "level", "pn_letter", "carried"]
 
@@ -149,6 +150,10 @@ class DB:
             cols = {r[1] for r in self.con.execute(f"PRAGMA table_info({table})")}
             if col not in cols:
                 self.con.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+        if not self.con.execute("SELECT 1 FROM settings WHERE key='letter_amount_v2'").fetchone():
+            # letters are for the net balance after the receipts (requested Nov 2026), once
+            self.con.execute("INSERT OR REPLACE INTO settings VALUES('letter_amount', 'balance_paid')")
+            self.con.execute("INSERT OR REPLACE INTO settings VALUES('letter_amount_v2', '1')")
         self.con.commit()
 
     def close(self):
@@ -447,7 +452,9 @@ class DB:
                          (serial, kind, code, cycle_id, date, amount, pdf, prev_serial, self.user, now(), rep_name))
 
     def letters(self, code=None, cycle_id=None):
-        q, args = "SELECT l.*, c.name FROM letters l LEFT JOIN customers c ON c.code=l.code WHERE 1=1", []
+        q, args = ("SELECT l.*, c.name, cc.matched AS matched, cc.match_reason AS match_reason FROM letters l "
+                   "LEFT JOIN customers c ON c.code=l.code "
+                   "LEFT JOIN cycle_customers cc ON cc.cycle_id=l.cycle_id AND cc.code=l.code WHERE 1=1"), []
         if code:
             q += " AND l.code=?"
             args.append(code)
@@ -473,8 +480,11 @@ class DB:
     def add_receipts(self, cycle_id, recs, source):
         added = 0
         for r in recs:
-            cur = self.con.execute("INSERT OR IGNORE INTO receipts VALUES(?,?,?,?,?,?,?,?,?)",
-                                   (cycle_id, r.voucher, r.date, r.code, r.name, r.account, r.amount, source, now()))
+            due = getattr(r, "due", "") or r.date      # receipts count by their due date (تاريخ الاستحقاق)
+            cur = self.con.execute(
+                "INSERT OR IGNORE INTO receipts(cycle_id, voucher, date, code, name, account, amount, source, uploaded,"
+                " voucher_date) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (cycle_id, r.voucher, due, r.code, r.name, r.account, r.amount, source, now(), r.date))
             added += cur.rowcount
         self.con.commit()
         return added

@@ -106,9 +106,13 @@ def attach_signed(db, folder, cycle, paths, progress=None):
     return matched, unknown
 
 
+def signed_dir(folder, cycle, rep_name):
+    return folder.files_dir(cycle["month"], "signed", safe_name(rep_name or "بدون مندوب"))
+
+
 def attach_signed_to(db, folder, cycle, code, path, dest=None):
-    dest = dest or folder.files_dir(cycle["month"], "signed")
     c = db.cycle_customer(cycle["id"], code)
+    dest = signed_dir(folder, cycle, c["rep_name"] if c else "")
     ext = os.path.splitext(path)[1]
     target = os.path.join(dest, f"{code} - {safe_name(c['name'] if c else '')}{ext}")
     n = 1
@@ -116,7 +120,9 @@ def attach_signed_to(db, folder, cycle, code, path, dest=None):
         n += 1
         target = os.path.join(dest, f"{code} - {safe_name(c['name'] if c else '')} ({n}){ext}")
     shutil.copy2(path, target)
-    db.update_cycle_customer(cycle["id"], code, matched=1, signed=os.path.relpath(target, folder.path))
+    rel = os.path.relpath(target, folder.path)
+    db.update_cycle_customer(cycle["id"], code, matched=1, signed=rel, match_reason="")
+    db.add_customer_file(code, "signed", f"مطابقة {cycle['month']} — {os.path.basename(path)}", rel)
     db.log("كشف موقع", os.path.basename(path), code=code, cycle_id=cycle["id"])
     refresh_status(db, cycle, {code})
 
@@ -186,9 +192,11 @@ def stage_end(db, cycle, stage):
 def add_receipts(db, folder, cycle, recs, path, start="", end=""):
     """Store the receipts of one file dated within [start, end]; the others are left for their own stage
     (re-uploading later never counts a voucher twice). Returns counts for the screen."""
-    before = [r for r in recs if start and r.date < start]
-    after = [r for r in recs if end and r.date > end]
-    recs = [r for r in recs if (not start or r.date >= start) and (not end or r.date <= end)]
+    def d(r):           # the due date (تاريخ الاستحقاق) decides the period, not the voucher date
+        return getattr(r, "counted", "") or r.date
+    before = [r for r in recs if start and d(r) < start]
+    after = [r for r in recs if end and d(r) > end]
+    recs = [r for r in recs if (not start or d(r) >= start) and (not end or d(r) <= end)]
     dest = folder.files_dir(cycle["month"], "receipts")
     target = os.path.join(dest, safe_name(os.path.basename(path)))
     if os.path.abspath(path) != os.path.abspath(target):
@@ -240,9 +248,21 @@ LETTER_AMOUNTS = {
 }
 
 
+def balance_of(c):
+    """The customer's balance as read from his statement; the aging balance when no statement was read."""
+    sb = c.get("stmt_balance") if hasattr(c, "get") else None
+    return sb if sb is not None else (c["balance"] or 0)
+
+
+def balance_after(c):
+    """الرصيد بعد السداد = statement balance − receipts counted so far."""
+    return round(balance_of(c) - (c["paid"] or 0), 2)
+
+
 def remaining(c, mode="balance_paid"):
-    """Default letter amount (setting letter_amount): the Day 1 balance or overdue, less the receipts or not."""
-    base = c["overdue"] if mode.startswith("overdue") else c["balance"]
+    """Default letter amount (setting letter_amount): the balance (from the statement) or the Day 1 overdue, less
+    the receipts or not."""
+    base = c["overdue"] if mode.startswith("overdue") else balance_of(c)
     paid = c["paid"] or 0 if mode.endswith("_paid") else 0
     return round(max((base or 0) - paid, 0.0), 2)
 

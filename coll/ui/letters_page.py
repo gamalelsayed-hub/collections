@@ -36,9 +36,14 @@ class LettersPage(QWidget):
         bar.addWidget(self.search, 2)
         bar.addWidget(self.kind, 1)
         bar.addWidget(self.status)
+        self.f_match = QComboBox()
+        self.f_match.addItems(["كل حالات المطابقة", "مطابق", "غير مطابق", "لم يرجع"])
+        self.f_match.currentIndexChanged.connect(self.fill)
+        bar.addWidget(self.f_match)
         v.addLayout(bar)
         self.table = styled_table(["رقم الخطاب", "النوع", "التاريخ", "رقم العميل", "اسم العميل", "المندوب", "المبلغ",
-                                   "الحالة", "الخطاب السابق", "المستخدم", "سبب الإلغاء"])
+                                   "الحالة", "الخطاب السابق", "المستخدم", "سبب الإلغاء",
+                                   "المطابقة", "سبب عدم المطابقة"])
         self.table.doubleClicked.connect(self.open_pdf)
         v.addWidget(self.table, 1)
         bar = QHBoxLayout()
@@ -80,14 +85,20 @@ class LettersPage(QWidget):
         s = self.search.text().strip()
         kind = self.kind.currentData()
         st = self.status.currentText()
-        rows = [l for l in self.data if (not s or s in l["serial"] or s in (l["code"] or "") or s in (l["name"] or ""))
-                and (not kind or l["kind"] == kind) and (st == "الكل" or l["status"] == st)]
+        mt = self.f_match.currentIndex()
+        rows = [l for l in self.data if (not s or s in l["serial"] or s in (l["code"] or "") or s in (l["name"] or "")
+                                         or s in (l.get("match_reason") or ""))
+                and (not kind or l["kind"] == kind) and (st == "الكل" or l["status"] == st)
+                and (mt == 0 or (mt == 1 and l.get("matched") == 1) or (mt == 2 and l.get("matched") == 0)
+                     or (mt == 3 and l.get("matched") is None))]
         self.rows = rows
         t = self.table
         t.setRowCount(len(rows))
         for i, l in enumerate(rows):
             vals = [l["serial"], stages.KIND_NAMES.get(l["kind"], l["kind"]), fmt_date(l["date"]), l["code"], l["name"],
-                    l["rep_name"], money(l["amount"]), l["status"], l["prev_serial"], l["user"], l["cancel_reason"]]
+                    l["rep_name"], money(l["amount"]), l["status"], l["prev_serial"], l["user"], l["cancel_reason"],
+                    {1: "مطابق", 0: "غير مطابق"}.get(l.get("matched"), "لم يرجع"),
+                    "" if l.get("matched") == 1 else (l.get("match_reason") or "")]
             for c, val in enumerate(vals):
                 it = ro(val, c == 6)
                 if c == 7 and l["status"] == "ملغي":

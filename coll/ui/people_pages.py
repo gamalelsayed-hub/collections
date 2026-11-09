@@ -4,6 +4,7 @@ import os
 from PySide6.QtCore import QSettings, Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
+                               QInputDialog,
                                QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QTabWidget,
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
@@ -190,6 +191,9 @@ class CustomerDialog(QDialog):
         c["pn_value"] = self.pn_value.value() or None
         c["pn_date"] = self.pn_date.text().strip()
         c["notes"] = self.notes.toPlainText().strip()
+        if not c.get("name"):
+            warn(self, "اكتب اسم العميل.")
+            return
         if self.perm.isChecked() and not self.perm_reason.text().strip():
             warn(self, "اكتب سبب الاستثناء الدائم.")
             return
@@ -224,6 +228,9 @@ class CustomersPage(QWidget):
         bar.addWidget(QLabel("المندوب:"))
         bar.addWidget(self.f_rep, 1)
         bar.addWidget(self.only_missing)
+        add = QPushButton("➕ إضافة عميل")
+        add.clicked.connect(self.add_customer)
+        bar.addWidget(add)
         imp = QPushButton("📥 استيراد بيانات العملاء من Excel")
         imp.clicked.connect(self.import_excel)
         bar.addWidget(imp)
@@ -276,6 +283,31 @@ class CustomersPage(QWidget):
         self.summary.setText(f"العملاء: {len(vis)} من {len(getattr(self, 'all', []))}   |   بدون سجل تجاري: "
                              f"{sum(1 for c in vis if not c['cr_no'])}   |   عندهم سند لأمر: "
                              f"{sum(1 for c in vis if c['has_pn'])}")
+
+    def add_customer(self):
+        """A customer typed by hand (not from Excel / the aging report)."""
+        if not self.win.can_edit():
+            return
+        from ..textutil import code_text
+        code, ok = QInputDialog.getText(self, "إضافة عميل", "رقم العميل:")
+        code = code_text(code.strip()) if ok else ""
+        if not code:
+            return
+        if not code.isdigit():
+            warn(self, "رقم العميل لازم يكون أرقام فقط.")
+            return
+        db = self.win.db
+        if db.customer(code):
+            info(self, f"العميل {code} موجود من قبل — تُفتح بطاقته.")
+            self.win.open_customer(code)
+            self.load()
+            return
+        dlg = CustomerDialog(self.win, code)
+        dlg.setWindowTitle(f"عميل جديد — {code}")
+        dlg.fields["name"].setFocus()
+        if dlg.exec() == QDialog.Accepted:
+            db.log("إضافة عميل يدويًا", db.customer(code)["name"] if db.customer(code) else "", code=code)
+            self.load()
 
     def import_excel(self):
         """Excel with رقم العميل + any of: اسم العميل، المندوب، الفرع، النوع، السجل التجاري، الجوال، الإيميل،
