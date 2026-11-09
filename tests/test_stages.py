@@ -237,3 +237,13 @@ def test_undo_and_clear_matching(tmp_path):
     stages.clear_match(db, folder, cyc, "90000001", remove_signed=False)
     c1 = db.cycle_customer(cyc["id"], "90000001")
     assert c1["matched"] is None and c1["signed"] and db.customer_files("90000001")
+
+
+def test_long_paths_are_shortened(tmp_path):
+    from coll.day1 import MAX_PATH, fit_path
+    deep = os.path.join(str(tmp_path), "x" * 120, "1005 نموذج تحديث بيانات", "السماني حسن")
+    p = fit_path(deep, "16010010", "مؤسسة محمد علي مربع لأدوات البناء والسباكة والكهرباء والدهانات", "SL-26-1005-0098")
+    assert len(os.path.abspath(p)) <= MAX_PATH
+    assert os.path.basename(p).startswith("16010010 - مؤسسة") and p.endswith(" - SL-26-1005-0098.pdf")
+    short = fit_path(str(tmp_path), "1", "اسم قصير", "S1")
+    assert os.path.basename(short) == "1 - اسم قصير - S1.pdf"

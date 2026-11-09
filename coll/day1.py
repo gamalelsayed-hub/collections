@@ -30,6 +30,20 @@ def safe_name(s):
     return re.sub(r'[\\/:*?"<>|]+', "-", str(s)).strip()[:80] or "—"
 
 
+MAX_PATH = 240      # Windows refuses paths of 260+ characters ([Errno 2] No such file or directory)
+
+
+def fit_path(folder_path, head, name="", tail="", ext=".pdf"):
+    """folder_path/«head - name - tail».ext, the customer's name cut short so the whole path stays under the
+    Windows limit (a long Google Drive folder + a long customer name made the data update forms fail)."""
+    name = safe_name(name) if name else ""
+    parts = lambda n: " - ".join(x for x in (head, n, tail) if x) + ext   # noqa: E731
+    room = MAX_PATH - len(os.path.abspath(os.path.join(folder_path, parts(""))))
+    if name and room < len(name) + 3:
+        name = name[:max(room - 3, 0)].strip()
+    return os.path.join(folder_path, parts(name))
+
+
 def attach_file(db, folder, cycle, path, mode, rep_name="", progress=None):
     """mode: 'credit' (one file for all credit customers) or 'custody' (one file per rep).
     Stores a copy of the file and the sections of the customers that need reconciliation."""
@@ -291,7 +305,7 @@ def build_packages(db, folder, cycle, progress=None):
         rep = rep_of(db, c["rep_name"])
         key = rep["name"] if rep else f"بدون مندوب ({c['rep_name'] or '—'})"
         rep_dir = os.path.join(base, safe_name(key))
-        pdf = os.path.join(rep_dir, f"{c['code']} - {safe_name(c['name'])}.pdf")
+        pdf = fit_path(rep_dir, c["code"], c["name"])
         parts = [(os.path.join(folder.path, p["source"]), p["pages"]) for p in c["parts"]]
         old = os.path.join(folder.path, c["prepend"]) if c["prepend"] else ""
         if old and os.path.exists(old):

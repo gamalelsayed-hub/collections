@@ -13,7 +13,7 @@ import zipfile
 from datetime import date
 
 from . import letters as L
-from .day1 import safe_name
+from .day1 import fit_path, safe_name
 
 STAGES = {
     "finance": (1, "خطاب الإدارة المالية"),
@@ -114,11 +114,11 @@ def attach_signed_to(db, folder, cycle, code, path, dest=None):
     c = db.cycle_customer(cycle["id"], code)
     dest = signed_dir(folder, cycle, c["rep_name"] if c else "")
     ext = os.path.splitext(path)[1]
-    target = os.path.join(dest, f"{code} - {safe_name(c['name'] if c else '')}{ext}")
+    target = fit_path(dest, code, c["name"] if c else "", "", ext)
     n = 1
     while os.path.exists(target):
         n += 1
-        target = os.path.join(dest, f"{code} - {safe_name(c['name'] if c else '')} ({n}){ext}")
+        target = fit_path(dest, code, c["name"] if c else "", f"({n})", ext)
     shutil.copy2(path, target)
     rel = os.path.relpath(target, folder.path)
     db.update_cycle_customer(cycle["id"], code, matched=1, signed=rel, match_reason="")
@@ -448,7 +448,7 @@ def issue(db, folder, cycle, items, date_iso=None, stage=None, progress=None):
         prev = db.last_letter(c["code"])
         serial = db.next_serial(kind)
         out_dir = os.path.join(base, f"{kind[:4]} {KIND_NAMES[kind]}", safe_name(key))
-        pdf = os.path.join(out_dir, f"{c['code']} - {safe_name(c['name'])} - {safe_name(serial)}.pdf")
+        pdf = fit_path(out_dir, c["code"], c["name"] or "", safe_name(serial))
         try:
             extra = final_direction_values(db, c, cust) if kind == "FD" else None
             render_letter(db, folder, kind, cust, it["amount"], serial, date_iso, prev, pdf, extra)
@@ -552,8 +552,8 @@ def start_negotiation(db, folder, cycle, code, data, date_iso=None):
         extra[f"القسط{i + 1}_تاريخ"] = L.fmt_date(d) if d else "____/____/2026"
     serial = db.next_serial("1002")
     month = cycle["month"] if cycle else date_iso[:7]
-    pdf = os.path.join(folder.files_dir(month, "letters", "1002 اتفاقيات التسوية"),
-                       f"{code} - {safe_name(cust.get('name', ''))} - {safe_name(serial)}.pdf")
+    pdf = fit_path(folder.files_dir(month, "letters", "1002 اتفاقيات التسوية"), code, cust.get("name") or "",
+                   safe_name(serial))
     try:
         render_letter(db, folder, "1002", cust, data["amount"], serial, date_iso, db.last_letter(code), pdf, extra)
         db.add_letter(serial, "1002", code, cycle["id"] if cycle else None, date_iso, data["amount"],

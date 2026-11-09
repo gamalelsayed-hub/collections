@@ -5,7 +5,7 @@ import os
 from datetime import date, timedelta
 
 from . import stages as S
-from .day1 import safe_name
+from .day1 import fit_path, safe_name
 from .letters import fmt_date, money
 
 
@@ -71,7 +71,7 @@ def issue_forms(db, folder, cycle, codes, date_iso=None, progress=None):
         key = rep["name"] if rep else f"بدون مندوب ({c['rep_name'] or '—'})"
         serial = db.next_serial("UPD")
         out_dir = os.path.join(base, UPD_DIR, safe_name(key))
-        pdf = os.path.join(out_dir, f"{code} - {safe_name(c['name'] or '')} - {safe_name(serial)}.pdf")
+        pdf = fit_path(out_dir, code, c["name"] or "", safe_name(serial))
         try:
             S.render_letter(db, folder, "UPD", cust, c["balance"] or 0, serial, date_iso, None, pdf)
             db.add_letter(serial, "UPD", code, cycle["id"], date_iso, c["balance"] or 0,
