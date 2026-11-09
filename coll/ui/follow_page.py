@@ -5,7 +5,7 @@ from PySide6.QtCore import QDate, QSettings, Qt, QUrl
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDateEdit, QDialog, QDialogButtonBox,
                                QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout, QHBoxLayout, QInputDialog,
-                               QLabel, QLineEdit, QMenu, QPushButton, QSpinBox, QTableWidgetItem, QVBoxLayout,
+                               QLabel, QLineEdit, QMenu, QMessageBox, QPushButton, QSpinBox, QTableWidgetItem, QVBoxLayout,
                                QWidget)
 
 from .. import direct, mailer, receipts, stages
@@ -110,6 +110,7 @@ class FollowPage(QWidget):
         self.rows = []
         self.packages = []
         self.kind_override = {}   # (cycle, code) → letter type chosen by the user for this issue
+        self.undo_stack = []      # [(text, cycle id, snapshot)] — matching operations that can be undone
         lay = QVBoxLayout(self)
         top = QHBoxLayout()
         top.addWidget(QLabel("الدورة:"))
@@ -138,6 +139,11 @@ class FollowPage(QWidget):
         b = QPushButton("📋 تصدير أسماء ملفات المطابقات")
         b.setToolTip("Excel فيه لكل عميل اسم الملف المطلوب (الرقم - الاسم): انسخه وسمِّ به ملف المطابقة ثم ارفعها كلها مرة واحدة")
         b.clicked.connect(self.export_file_names)
+        v1.addWidget(b)
+        b = QPushButton("↶ تراجع عن آخر عملية مطابقة")
+        b.setToolTip("يرجع العملاء كما كانوا قبل آخر «مطابق / غير مطابق / رفع كشوف موقعة / ملف المندوب» (Ctrl+Z)")
+        b.clicked.connect(self.undo_match)
+        self.undo_btn = b
         v1.addWidget(b)
         b = QPushButton("📥 رفع ملف حالة المطابقة من المندوب")
         b.setToolTip("ملف «قائمة العملاء» اللي في الملف المضغوط بعد ما يعبّي المندوب عمود حالة المطابقة والسبب")
@@ -204,6 +210,7 @@ class FollowPage(QWidget):
         v4.addWidget(d_info)
         for text, fn in (("📋 عرض العملاء", lambda: self.view.setCurrentIndex(2)),
                          ("🖨 إصدار نموذج تحديث البيانات للمحددين", self.issue_update_forms),
+                         ("📂 فتح فولدر نماذج التحديث (حسب المندوب)", self.open_forms_folder),
                          ("📧 إرسال المصادقة للعملاء المحددين مباشرة", self.send_direct)):
             b = QPushButton(text)
             b.clicked.connect(fn)
@@ -266,6 +273,9 @@ class FollowPage(QWidget):
         self.table.customContextMenuRequested.connect(self.menu)
         self.table.cellDoubleClicked.connect(self._double)
         lay.addWidget(self.table, 1)
+        from PySide6.QtGui import QKeySequence, QShortcut
+        QShortcut(QKeySequence.Undo, self, activated=self._undo_key)
+        self._undo_text()
 
     # ---------------------------------------------------------------- data
     def load(self):
@@ -540,6 +550,10 @@ class FollowPage(QWidget):
         m = QMenu(self)
         acts = [("✔ مطابق", lambda: self._match(r, 1)), ("✖ غير مطابق (مع السبب)", lambda: self._match(r, 0)),
                 ("📎 إرفاق كشف موقع لهذا العميل", lambda: self._attach_one(r))]
+        if r["matched"] is not None or r.get("signed"):
+            acts.append(("↩ إلغاء المطابقة (يرجع «لم يرجع بعد»)", lambda: self._clear_match(r)))
+        if r.get("upd_serial"):
+            acts.append((f"📄 فتح نموذج تحديث البيانات {r['upd_serial']}", lambda: self.open_form(r)))
         if r.get("signed"):
             acts.append(("📄 فتح الكشف الموقع (المطابقة)", lambda: self.open_signed(r)))
 
@@ -577,8 +591,86 @@ class FollowPage(QWidget):
             note, ok = QInputDialog.getText(self, "غير مطابق", f"سبب عدم المطابقة — {r['name']}:")
             if not ok:
                 return
+        self._remember(f"{'مطابق' if value == 1 else 'غير مطابق'} — {r['name']}", [r["code"]])
         stages.set_matched(self.win.db, self.cycle, r["code"], value, note.strip())
         self.refresh()
+
+    # ---------------------------------------------------------------- undo matching
+    def _remember(self, text, codes=None):
+        db = self.win.db
+        if codes is None:
+            codes = [c["code"] for c in db.cycle_customers(self.cycle["id"])]
+        self.undo_stack.append((text, self.cycle["id"], stages.match_snapshot(db, self.cycle, codes)))
+        del self.undo_stack[:-20]
+        self._undo_text()
+
+    def _undo_text(self):
+        last = self.undo_stack[-1][0] if self.undo_stack else ""
+        self.undo_btn.setEnabled(bool(last))
+        self.undo_btn.setToolTip(f"تراجع عن: {last}" if last else "لا توجد عملية مطابقة للتراجع عنها")
+
+    def _undo_key(self):
+        w = QApplication.focusWidget()
+        if isinstance(w, QLineEdit):        # Ctrl+Z inside a text box undoes the typing, not a matching
+            w.undo()
+            return
+        self.undo_match()
+
+    def undo_match(self):
+        if not self.undo_stack or not self.win.can_edit():
+            return
+        text, cid, snap = self.undo_stack[-1]
+        if not self.cycle or cid != self.cycle["id"]:
+            warn(self, "آخر عملية كانت في دورة أخرى — اختر تلك الدورة أولًا.")
+            return
+        changed = [o for o in snap if any(o[f] != (self.win.db.cycle_customer(cid, o["code"]) or {}).get(f)
+                                          for f in stages.MATCH_FIELDS)]
+        if not ask(self, f"التراجع عن: {text}؟\nيرجع {len(changed)} عميل كما كانوا قبلها"
+                         + (" (وتُحذف الكشوف الموقعة اللي انرفعت فيها)." if any(
+                             (self.win.db.cycle_customer(cid, o["code"]) or {}).get("signed") != o["signed"]
+                             for o in changed) else ".")):
+            return
+        self.undo_stack.pop()
+        stages.restore_match(self.win.db, self.win.folder, self.cycle, changed)
+        self._undo_text()
+        self.refresh()
+
+    def _clear_match(self, r):
+        if not self.win.can_edit():
+            return
+        remove = False
+        if r.get("signed"):
+            box = QMessageBox(QMessageBox.Question, "إلغاء المطابقة",
+                              f"إلغاء المطابقة لـ {r['name']} ورجوعه «لم يرجع بعد».\nالكشف الموقع المرفق:",
+                              parent=self)
+            keep = box.addButton("أبقِه في المرفقات", QMessageBox.NoRole)
+            drop = box.addButton("احذفه (مرفق بالغلط)", QMessageBox.YesRole)
+            box.addButton("إلغاء", QMessageBox.RejectRole)
+            box.exec()
+            if box.clickedButton() not in (keep, drop):
+                return
+            remove = box.clickedButton() is drop
+        elif not ask(self, f"إلغاء المطابقة لـ {r['name']} ورجوعه «لم يرجع بعد»؟"):
+            return
+        self._remember(f"إلغاء المطابقة — {r['name']}", [r["code"]])
+        if remove:      # an undo can't bring a deleted file back
+            self.undo_stack.pop()
+            self._undo_text()
+        stages.clear_match(self.win.db, self.win.folder, self.cycle, r["code"], remove)
+        self.refresh()
+
+    # ---------------------------------------------------------------- data update forms: files
+    def open_forms_folder(self):
+        if self.cycle:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(direct.forms_dir(self.win.folder, self.cycle)))
+
+    def open_form(self, r):
+        l = next((x for x in self.win.db.letters(code=r["code"]) if x["serial"] == r.get("upd_serial")), None)
+        p = os.path.join(self.win.folder.path, l["pdf"]) if l and l["pdf"] else ""
+        if not p or not os.path.exists(p):
+            warn(self, "ملف النموذج غير موجود (ربما لم تكتمل مزامنة الدرايف).")
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(p))
 
     def _stop(self, r, stop):
         if not self.win.can_edit():
@@ -615,7 +707,9 @@ class FollowPage(QWidget):
                                         self.date.date().toString("yyyy-MM-dd"), bar)
                 bar(len(codes), len(codes), "تجهيز ملف لكل مندوب")
         except Exception as e:  # noqa: BLE001
-            error(self, f"تعذر إصدار النماذج:\n{e}")
+            self.refresh()
+            error(self, f"تعذر إصدار النماذج:\n{type(e).__name__}: {e}\n\nلو الرسالة فيها «Permission denied» "
+                        "فغالبًا ملف PDF من نفس اليوم مفتوح — اقفله وأعد المحاولة.")
             return
         self.packages = pk
         self.refresh()
@@ -671,6 +765,7 @@ class FollowPage(QWidget):
         if not paths:
             return
         from .. import day1
+        self._remember(f"ملف حالة المطابقة من المندوب ({len(paths)} ملف)")
         total, unknown, invalid, failed = 0, [], [], []
         with Progress(self, "رفع ملفات حالة المطابقة") as bar:
             for i, p in enumerate(paths):
@@ -700,6 +795,7 @@ class FollowPage(QWidget):
                                               QSettings().value("last_dir", os.path.expanduser("~")),
                                               "PDF / صور (*.pdf *.jpg *.jpeg *.png)")
         if path:
+            self._remember(f"إرفاق كشف موقع — {r['name']}", [r["code"]])
             stages.attach_signed_to(self.win.db, self.win.folder, self.cycle, r["code"], path)
             self.refresh()
 
@@ -752,6 +848,7 @@ class FollowPage(QWidget):
         if not paths:
             return
         QSettings().setValue("last_dir", os.path.dirname(paths[0]))
+        self._remember(f"رفع {len(paths)} كشف موقع")
         with Progress(self, "رفع الكشوف الموقعة") as bar:
             matched, unknown = stages.attach_signed(self.win.db, self.win.folder, self.cycle, paths, bar)
             bar(len(paths), len(paths))

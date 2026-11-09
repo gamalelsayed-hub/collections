@@ -9,6 +9,13 @@ from .day1 import safe_name
 from .letters import fmt_date, money
 
 
+UPD_DIR = "1005 نموذج تحديث بيانات"     # inside the cycle's letters folder: one sub-folder per rep
+
+
+def forms_dir(folder, cycle):
+    return folder.files_dir(cycle["month"], "letters", UPD_DIR)
+
+
 def candidates(db, cycle):
     """Required customers not matched and below the finance threshold (not excluded / negotiating)."""
     thr, neg = S.threshold(db, "finance"), S.negotiating_codes(db)
@@ -57,12 +64,14 @@ def issue_forms(db, folder, cycle, codes, date_iso=None, progress=None):
             progress(i, len(codes), code)
         c = db.cycle_customer(cycle["id"], code)
         cust = dict(masters.get(code, {}))
-        cust.update(code=code, name=c["name"] or cust.get("name", ""), rep_name=c["rep_name"])
+        if c is None:
+            raise ValueError(f"العميل {code} غير موجود في هذه الدورة")
+        cust.update(code=code, name=c["name"] or cust.get("name") or "", rep_name=c["rep_name"] or "")
         rep = db.rep_for(c["rep_name"]) if c["rep_name"] else None
         key = rep["name"] if rep else f"بدون مندوب ({c['rep_name'] or '—'})"
         serial = db.next_serial("UPD")
-        out_dir = os.path.join(base, "1005 نموذج تحديث بيانات", safe_name(key))
-        pdf = os.path.join(out_dir, f"{code} - {safe_name(c['name'])} - {safe_name(serial)}.pdf")
+        out_dir = os.path.join(base, UPD_DIR, safe_name(key))
+        pdf = os.path.join(out_dir, f"{code} - {safe_name(c['name'] or '')} - {safe_name(serial)}.pdf")
         try:
             S.render_letter(db, folder, "UPD", cust, c["balance"] or 0, serial, date_iso, None, pdf)
             db.add_letter(serial, "UPD", code, cycle["id"], date_iso, c["balance"] or 0,
@@ -76,7 +85,7 @@ def issue_forms(db, folder, cycle, codes, date_iso=None, progress=None):
                                     "letters": [], "dir": out_dir})
         e["letters"].append({"code": code, "name": c["name"], "serial": serial, "kind": "UPD", "amount": 0,
                              "pdf": pdf})
-    return S.package(db, folder, cycle, by_rep, date_iso)
+    return S.package(db, folder, cycle, by_rep, date_iso, "نماذج تحديث بيانات", UPD_DIR)
 
 
 def mails(db, folder, cycle, codes, today=None):

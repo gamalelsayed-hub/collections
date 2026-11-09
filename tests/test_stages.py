@@ -216,3 +216,24 @@ def test_signed_statement_kept_per_rep_and_in_attachments(tmp_path):
     assert os.path.exists(os.path.join(folder.path, c["signed"]))
     files = db.customer_files("90000001")
     assert files and files[0]["kind"] == "signed" and files[0]["path"] == c["signed"]
+
+
+def test_undo_and_clear_matching(tmp_path):
+    folder, db, cyc = setup_cycle(tmp_path)
+    f = tmp_path / "90000001.pdf"
+    f.write_bytes(b"%PDF-1.4")
+    snap = stages.match_snapshot(db, cyc, ["90000001", "90000003"])
+    stages.attach_signed(db, folder, cyc, [str(f)])
+    stages.set_matched(db, cyc, "90000003", 0, "خطأ في فاتورة")
+    signed = db.cycle_customer(cyc["id"], "90000001")["signed"]
+    assert os.path.exists(os.path.join(folder.path, signed))
+    stages.restore_match(db, folder, cyc, snap)
+    c1, c3 = db.cycle_customer(cyc["id"], "90000001"), db.cycle_customer(cyc["id"], "90000003")
+    assert c1["matched"] is None and not c1["signed"] and c3["matched"] is None and not c3["match_reason"]
+    assert not os.path.exists(os.path.join(folder.path, signed)) and not db.customer_files("90000001")
+    assert c1["status"] not in ("مطابق", "غير مطابق")
+    # clear one customer, keeping the file
+    stages.attach_signed(db, folder, cyc, [str(f)])
+    stages.clear_match(db, folder, cyc, "90000001", remove_signed=False)
+    c1 = db.cycle_customer(cyc["id"], "90000001")
+    assert c1["matched"] is None and c1["signed"] and db.customer_files("90000001")

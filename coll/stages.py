@@ -137,6 +137,62 @@ def set_matched(db, cycle, code, value, note=""):
     refresh_status(db, cycle, {code})
 
 
+MATCH_FIELDS = ("matched", "match_reason", "signed", "stop_letters", "stop_reason")
+
+
+def match_snapshot(db, cycle, codes):
+    """The matching state of these customers, to undo a wrong مطابق / غير مطابق / signed upload."""
+    out = []
+    for code in codes:
+        c = db.cycle_customer(cycle["id"], code)
+        if c:
+            out.append({"code": code, "name": c["name"], **{f: c.get(f) for f in MATCH_FIELDS}})
+    return out
+
+
+def _drop_signed(db, folder, code, rel):
+    """Delete a signed statement file added by mistake and its line in the customer's attachments."""
+    for f in db.customer_files(code):
+        if f["kind"] == "signed" and f["path"] == rel:
+            db.delete_customer_file(f["id"])
+    if not db.con.execute("SELECT 1 FROM cycle_customers WHERE signed=?", (rel,)).fetchone():
+        try:
+            os.remove(os.path.join(folder.path, rel))
+        except OSError:
+            pass
+
+
+def restore_match(db, folder, cycle, snapshot):
+    """Put the customers back as they were before the operation (the signed files it added are removed)."""
+    for old in snapshot:
+        cur = db.cycle_customer(cycle["id"], old["code"])
+        if not cur:
+            continue
+        db.update_cycle_customer(cycle["id"], old["code"], commit=False, **{f: old[f] for f in MATCH_FIELDS})
+        if cur.get("signed") and cur["signed"] != old.get("signed"):
+            _drop_signed(db, folder, old["code"], cur["signed"])
+        db.log("تراجع عن المطابقة", "رجع كما كان: " + ({1: "مطابق", 0: "غير مطابق"}.get(old["matched"], "لم يرجع")),
+               code=old["code"], cycle_id=cycle["id"])
+    db.commit()
+    refresh_status(db, cycle, {o["code"] for o in snapshot})
+
+
+def clear_match(db, folder, cycle, code, remove_signed=False):
+    """Back to «not returned yet» (no مطابق / غير مطابق); optionally remove the attached signed statement."""
+    c = db.cycle_customer(cycle["id"], code)
+    if not c:
+        return
+    fields = {"matched": None, "match_reason": "", "stop_letters": 0, "stop_reason": ""}
+    if remove_signed and c.get("signed"):
+        fields["signed"] = ""
+    db.update_cycle_customer(cycle["id"], code, **fields)
+    if remove_signed and c.get("signed"):
+        _drop_signed(db, folder, code, c["signed"])
+    db.log("إلغاء المطابقة", "رجع «لم يرجع بعد»" + (" وحُذف الكشف الموقع" if remove_signed and c.get("signed") else ""),
+           code=code, cycle_id=cycle["id"])
+    refresh_status(db, cycle, {code})
+
+
 def set_stop_letters(db, cycle, code, stop, reason=""):
     """Matched customer: continue the letters stages (stop=False) or not, even if he has not paid."""
     db.update_cycle_customer(cycle["id"], code, stop_letters=1 if stop else 0, stop_reason=reason if stop else "")
@@ -415,9 +471,24 @@ def issue(db, folder, cycle, items, date_iso=None, stage=None, progress=None):
     return package(db, folder, cycle, by_rep, date_iso)
 
 
-def package(db, folder, cycle, by_rep, date_iso):
+def _free_name(path):
+    """path, or «name (2).ext» … when the file exists and cannot be replaced (open in a PDF viewer)."""
+    if not os.path.exists(path):
+        return path
+    try:
+        with open(path, "ab"):
+            return path
+    except OSError:
+        root, ext = os.path.splitext(path)
+        n = 2
+        while os.path.exists(f"{root} ({n}){ext}"):
+            n += 1
+        return f"{root} ({n}){ext}"
+
+
+def package(db, folder, cycle, by_rep, date_iso, label="خطابات", sub="zips"):
     from pypdf import PdfReader, PdfWriter
-    zips = folder.files_dir(cycle["month"], "letters", "zips")
+    zips = folder.files_dir(cycle["month"], "letters", sub)
     out = []
     for key, e in sorted(by_rep.items()):
         w = PdfWriter()
@@ -425,10 +496,10 @@ def package(db, folder, cycle, by_rep, date_iso):
             for page in PdfReader(l["pdf"]).pages:
                 w.add_page(page)
         stamp = date_iso.replace("-", "")
-        combined = os.path.join(zips, f"{safe_name(key)} - خطابات {stamp} (للطباعة).pdf")
+        combined = _free_name(os.path.join(zips, f"{safe_name(key)} - {label} {stamp} (للطباعة).pdf"))
         with open(combined, "wb") as f:
             w.write(f)
-        zpath = os.path.join(zips, f"{safe_name(key)} - خطابات {stamp}.zip")
+        zpath = _free_name(os.path.join(zips, f"{safe_name(key)} - {label} {stamp}.zip"))
         with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
             for l in e["letters"]:
                 z.write(l["pdf"], os.path.basename(l["pdf"]))
